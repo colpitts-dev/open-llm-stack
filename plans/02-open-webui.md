@@ -134,4 +134,127 @@ docker compose restart open-webui && sleep 20 && make test
 - Nothing else consumes `WEBUI_*`. Plan 07's G9 external-swap test uses this service (`LITELLM_URL` → `http://host.docker.internal:3000` with `BIND_HOST=0.0.0.0`).
 - Startup warnings seen and benign: `CORS_ALLOW_ORIGIN IS SET TO '*'`, `USER_AGENT environment variable not set`, an SQLAlchemy `SAWarning` about `_alembic_tmp_tag`.
 
-## 7. Execution report (fill in)
+## 7. Execution report
+
+Executed 2026-09-12 (17:00–17:06 UTC) against the live stack; images already pulled, no internet. No file changes were needed: every gate passed on first run. `.env` has `COMPOSE_PROFILES=litellm,openwebui,buzz,gitea` (buzz/gitea have no services yet; Compose ignores them).
+
+### G0 — config validates with and without the litellm profile
+
+```
+$ for p in openwebui litellm,openwebui; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: $p"; done
+G0 ok: openwebui
+G0 ok: litellm,openwebui
+```
+
+### G2 — `make up`: three services healthy, preflight OK
+
+```
+$ time make up && docker compose ps
+port 3000: in use by this stack (ok)
+ports ok
+docker compose up -d --wait
+ Volume open-llm-stack_open-webui-data Created
+ Container open-llm-stack-open-webui-1 Started
+ Container open-llm-stack-litellm-db-1 Healthy
+ Container open-llm-stack-litellm-1 Healthy
+ Container open-llm-stack-open-webui-1 Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+make up  1:32.09 total
+NAME                          IMAGE                                   SERVICE      STATUS                        PORTS
+open-llm-stack-litellm-1      ghcr.io/berriai/litellm:v1.89.7         litellm      Up 15 minutes (healthy)       127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1   postgres:17.11-alpine                   litellm-db   Up 17 minutes (healthy)       5432/tcp
+open-llm-stack-open-webui-1   ghcr.io/open-webui/open-webui:v0.11.3   open-webui   Up About a minute (healthy)   127.0.0.1:3001->8080/tcp
+```
+
+Time to healthy (first boot, DB migrations): container `StartedAt` 17:00:02Z; image HEALTHCHECK probes at +30 s and +60 s returned exit 1, first exit 0 at 17:01:32Z — **90 s**.
+
+### G3 + G4 — `make test`
+
+```
+$ time make test
+--- litellm: registry
+embed
+laguna-max
+ornith-max
+qwen3.6-max
+qwen3.8-max
+--- litellm: chat round-trip (every mode:chat model; reasoning models need a generous max_tokens)
+qwen3.6-max -> OK
+ornith-max -> OK
+laguna-max -> OK
+qwen3.8-max -> OK
+--- litellm: embeddings
+1024
+--- litellm: no closed-weight model or router registered
+ok
+--- open-webui: health
+healthy
+version 0.11.3  auth=false
+--- open-webui: models via LiteLLM
+embed
+laguna-max
+ornith-max
+qwen3.6-max
+qwen3.8-max
+--- open-webui: chat round-trip via qwen3.6-max
+OK
+smoke test finished
+make test  48.485 total
+```
+
+Smoke test duration: **48.5 s** (first run; includes four LiteLLM chat round-trips plus the Open WebUI one).
+
+### G8 — every published port is loopback
+
+```
+$ docker compose ps --format '{{.Name}} {{.Ports}}'
+open-llm-stack-litellm-1 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 5432/tcp
+open-llm-stack-open-webui-1 127.0.0.1:3001->8080/tcp
+```
+
+(`litellm-db` has no host mapping; 5432 is container-internal only.)
+
+### Persistent-config check — restart, models still listed
+
+Used `sleep 25` rather than the plan's `sleep 20` (parent instruction; a restart with an already-migrated DB is well under that).
+
+```
+$ docker compose restart open-webui && sleep 25 && time make test
+ Container open-llm-stack-open-webui-1 Restarting
+ Container open-llm-stack-open-webui-1 Started
+[litellm section identical to above]
+--- open-webui: health
+healthy
+version 0.11.3  auth=false
+--- open-webui: models via LiteLLM
+embed
+laguna-max
+ornith-max
+qwen3.6-max
+qwen3.8-max
+--- open-webui: chat round-trip via qwen3.6-max
+OK
+smoke test finished
+make test  35.701 total
+```
+
+Second smoke run: **35.7 s**. `ENABLE_PERSISTENT_CONFIG=false` confirmed: LiteLLM connection survives a restart from env alone.
+
+### Browser-facing sanity
+
+```
+$ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/
+200
+$ curl -s http://127.0.0.1:3001/api/config | jq '.features.auth'
+false
+```
+
+### Logs
+
+The three warnings listed in §6 all appeared (`CORS_ALLOW_ORIGIN`, `USER_AGENT`, `_alembic_tmp_tag` SAWarning). Two additional benign lines not in §6, worth knowing so nobody chases them: a `FutureWarning` from `google/auth/transport/grpc.py` about grpcio < 1.83.0, and a `huggingface_hub` "unauthenticated requests to the HF Hub" notice from the embedding-model fetch (no internet on this host; the container still went healthy). No errors or tracebacks.
+
+### Fixes
+
+None. No image tag, flag, env name, or script was changed. Stack left running (litellm, litellm-db, open-webui all healthy); `.env` untouched.

@@ -8,6 +8,7 @@ networks:
 
 volumes:
   litellm-db-data:
+  open-webui-data:
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -52,3 +53,23 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # ---------------------------------------------------------------- profile: openwebui (port 3001)
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.3   # verified 2026-09-12
+    profiles: [openwebui]
+    restart: unless-stopped
+    environment:
+      WEBUI_AUTH: ${WEBUI_AUTH:-false}            # false = single user, no login screen
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?run make init}
+      ENABLE_PERSISTENT_CONFIG: "false"           # env wins on every boot; otherwise first-boot values freeze in the DB
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URL: ${LITELLM_URL:-http://litellm:4000}/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+      ENABLE_OLLAMA_API: "false"                  # default true would bypass the gateway
+    volumes:
+      - open-webui-data:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"       # lets LITELLM_URL point at a gateway running on the host
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${OPENWEBUI_PORT:-3001}:8080"

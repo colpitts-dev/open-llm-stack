@@ -33,6 +33,30 @@ test_litellm() {
   echo "ok"
 }
 
+test_openwebui() {
+  local base="http://${BIND_HOST}:${OPENWEBUI_PORT:-3001}"
+  echo "--- open-webui: health"
+  curl -fsS "$base/health" | jq -e '.status == true' >/dev/null && echo "healthy"
+  curl -fsS "$base/api/config" | jq -r '"version \(.version)  auth=\(.features.auth)"'
+  local token
+  if [ "${WEBUI_AUTH:-false}" = "false" ]; then
+    # No-login mode still requires a bearer token for the API; an empty sign-in returns the admin session.
+    token=$(curl -fsS -X POST "$base/api/v1/auths/signin" -H 'Content-Type: application/json' -d '{"email":"","password":""}' | jq -r .token)
+  else
+    echo "(WEBUI_AUTH=true: set OPENWEBUI_TOKEN in the environment to run the API checks)"; token="${OPENWEBUI_TOKEN:-}"
+  fi
+  [ -n "$token" ] || { echo "(no token -- skipping model/chat checks)"; return 0; }
+  echo "--- open-webui: models via LiteLLM"
+  curl -fsS -H "Authorization: Bearer $token" "$base/api/models" | jq -r '.data[].id' | grep -v '^arena-model$' | sort
+  local m; m=$(curl -fsS -H "Authorization: Bearer $token" "$base/api/models" | jq -r '[.data[].id | select(. != "arena-model")][0]')
+  [ -n "$m" ] && [ "$m" != "null" ] || fail "open-webui sees no models from LiteLLM (check LITELLM_URL / LITELLM_MASTER_KEY)"
+  echo "--- open-webui: chat round-trip via $m"
+  curl -fsS -m 300 -H "Authorization: Bearer $token" "$base/api/chat/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_tokens\":512}" \
+    | jq -r '.choices[0].message.content // ("ERROR: " + (.detail // .error // "unknown" | tostring))'
+}
+
 # --- dispatcher (later plans add: openwebui, buzz, gitea) ---
 has_profile litellm && test_litellm
+has_profile openwebui && test_openwebui
 echo "smoke test finished"
