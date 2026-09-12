@@ -9,6 +9,10 @@ networks:
 volumes:
   litellm-db-data:
   open-webui-data:
+  buzz-db-data:
+  buzz-redis-data:
+  buzz-minio-data:
+  buzz-git-data:
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -73,3 +77,118 @@ services:
       - "host.docker.internal:host-gateway"       # lets LITELLM_URL point at a gateway running on the host
     ports:
       - "${BIND_HOST:-127.0.0.1}:${OPENWEBUI_PORT:-3001}:8080"
+
+  # ---------------------------------------------------------------- profile: buzz (port 3002)
+  buzz:
+    image: ghcr.io/block/buzz:sha-e17cdd9   # main@e17cdd9 2026-09-11; newest commit with relay AND buzz-sprig images
+    profiles: [buzz]
+    restart: unless-stopped
+    environment:
+      # The relay binds a community to the exact host:port in RELAY_URL and rejects every other Host
+      # header with 404 (spec §5.3). Bind the same port inside the container as outside so one number
+      # (BUZZ_PORT) is the truth everywhere.
+      BUZZ_BIND_ADDR: 0.0.0.0:${BUZZ_PORT:-3002}
+      BUZZ_HEALTH_PORT: "8080"
+      BUZZ_METRICS_PORT: "9102"
+      RELAY_URL: ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}
+      BUZZ_MEDIA_BASE_URL: http://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}/media
+      BUZZ_CORS_ORIGINS: http://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002},http://localhost:${BUZZ_PORT:-3002}
+      BUZZ_REQUIRE_AUTH_TOKEN: ${BUZZ_REQUIRE_AUTH_TOKEN:-false}
+      BUZZ_REQUIRE_RELAY_MEMBERSHIP: ${BUZZ_REQUIRE_RELAY_MEMBERSHIP:-false}
+      RELAY_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:-}       # only needed for closed mode; blank is ignored
+      BUZZ_SERVE_GIT_WEB_GUI: ${BUZZ_SERVE_GIT_WEB_GUI:-true}
+      BUZZ_AUTO_MIGRATE: "true"
+      BUZZ_GIT_CONFORMANCE_PROBE: "true"
+      BUZZ_RELAY_PRIVATE_KEY: ${BUZZ_RELAY_PRIVATE_KEY:?run make init}
+      BUZZ_GIT_HOOK_HMAC_SECRET: ${BUZZ_GIT_HOOK_HMAC_SECRET:?run make init}
+      DATABASE_URL: postgres://buzz:${BUZZ_DB_PASSWORD}@buzz-db:5432/buzz
+      REDIS_URL: redis://:${BUZZ_REDIS_PASSWORD}@buzz-redis:6379
+      BUZZ_S3_ENDPOINT: http://buzz-minio:9000
+      BUZZ_S3_ADDRESSING_STYLE: path                    # Docker DNS resolves buzz-minio, not <bucket>.buzz-minio
+      BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY}
+      BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY}
+      BUZZ_S3_BUCKET: buzz-media
+      BUZZ_GIT_REPO_PATH: /data/git
+    volumes:
+      - buzz-git-data:/data/git
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${BUZZ_PORT:-3002}:${BUZZ_PORT:-3002}"
+    depends_on:
+      buzz-db:
+        condition: service_healthy
+      buzz-redis:
+        condition: service_healthy
+      buzz-minio:
+        condition: service_healthy
+      buzz-minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/_readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  buzz-db:
+    image: postgres:17.11-alpine
+    profiles: [buzz]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: buzz
+      POSTGRES_USER: buzz
+      POSTGRES_PASSWORD: ${BUZZ_DB_PASSWORD:?run make init}
+    volumes:
+      - buzz-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buzz -d buzz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  buzz-redis:
+    image: redis:7.4.11-alpine
+    profiles: [buzz]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${BUZZ_REDIS_PASSWORD:?run make init}"]
+    environment:
+      REDIS_PASSWORD: ${BUZZ_REDIS_PASSWORD}
+    volumes:
+      - buzz-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  buzz-minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z   # pull from quay.io; Docker Hub denies anonymous access
+    profiles: [buzz]
+    restart: unless-stopped
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?run make init}
+      MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?run make init}
+    volumes:
+      - buzz-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  buzz-minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    profiles: [buzz]
+    restart: "no"
+    depends_on:
+      buzz-minio:
+        condition: service_healthy
+    # $0/$1 are the two trailing args -- avoids $$ escaping games and never puts a secret in `ps` output twice
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - mc alias set local http://buzz-minio:9000 "$0" "$1" && mc mb --ignore-existing local/buzz-media && mc anonymous set none local/buzz-media
+      - ${BUZZ_S3_ACCESS_KEY}
+      - ${BUZZ_S3_SECRET_KEY}

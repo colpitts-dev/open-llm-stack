@@ -239,4 +239,156 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Accept: text/html' http://localhost
 - Plan 06 adds the agent; it connects through `BUZZ_RELAY_URL` on the host network, so nothing here changes for it.
 - Upstream reference for these five services: `github.com/block/buzz` `deploy/compose/compose.yml` at commit ad9591c (2026-09-09), adapted to this project's names and `.env`.
 
-## 7. Execution report (fill in)
+## 7. Execution report
+
+**Date:** 2026-09-12 (17:13–17:17 UTC). Validated live on the reference host, Compose v5.1.3, `COMPOSE_PROFILES=litellm,openwebui,buzz,gitea` (gitea has no services yet). No fixes were needed; no file other than this report was changed.
+
+### G0 — compose valid per profile
+
+```
+$ for p in buzz litellm,openwebui,buzz; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: $p"; done
+G0 ok: buzz
+G0 ok: litellm,openwebui,buzz
+$ COMPOSE_PROFILES=buzz docker compose config --services
+buzz-minio
+buzz-minio-init
+buzz-redis
+buzz-db
+buzz
+```
+
+### `make up` + `docker compose ps -a`
+
+```
+$ make up
+./scripts/check-ports.sh
+port 3000: in use by this stack (ok)
+port 3001: in use by this stack (ok)
+ports ok
+docker compose up -d --wait
+ Volume open-llm-stack_buzz-git-data Created      (+ buzz-db-data, buzz-redis-data, buzz-minio-data)
+ Container open-llm-stack-buzz-minio-1 Healthy
+ Container open-llm-stack-buzz-redis-1 Healthy
+ Container open-llm-stack-buzz-db-1 Healthy
+ Container open-llm-stack-buzz-minio-init-1 Exited
+ Container open-llm-stack-buzz-1 Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+make up  17.782 total
+
+$ docker compose ps -a
+NAME                               SERVICE           STATUS
+open-llm-stack-buzz-1              buzz              Up 10 seconds (healthy)     3000/tcp, 8080/tcp, 9102/tcp, 127.0.0.1:3002->3002/tcp
+open-llm-stack-buzz-db-1           buzz-db           Up 17 seconds (healthy)     5432/tcp
+open-llm-stack-buzz-minio-1        buzz-minio        Up 17 seconds (healthy)     9000/tcp
+open-llm-stack-buzz-minio-init-1   buzz-minio-init   Exited (0) 11 seconds ago
+open-llm-stack-buzz-redis-1        buzz-redis        Up 17 seconds (healthy)     6379/tcp
+open-llm-stack-litellm-1           litellm           Up 27 minutes (healthy)     127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1        litellm-db        Up 30 minutes (healthy)     5432/tcp
+open-llm-stack-open-webui-1        open-webui        Up 11 minutes (healthy)     127.0.0.1:3001->8080/tcp
+```
+
+### Relay log: community line + expected WARN, no ERROR
+
+```
+$ docker compose logs buzz | grep -E 'Deployment community ensured|WARN|ERROR' | head
+{"timestamp":"2026-09-12T17:13:49.632690Z","level":"WARN","message":"BUZZ_REQUIRE_AUTH_TOKEN is false — REST API requests bypass token auth. WebSocket protocol auth is unaffected. Set to true for production.","target":"buzz_relay::config"}
+{"timestamp":"2026-09-12T17:13:50.643103Z","level":"INFO","message":"Deployment community ensured","host":"127.0.0.1:3002","community":"18502f1c-9ef1-4fcb-b473-4dc7df797163","target":"buzz_relay"}
+```
+
+The WARN is the documented open-mode notice (§6). Zero ERROR lines.
+
+### G3 + G4 + G5 — `make test` (58.6 s, exit 0)
+
+```
+--- litellm: registry
+embed / laguna-max / ornith-max / qwen3.6-max / qwen3.8-max   (max_input_tokens 237568/237568/237568/106496, all execution_locus=local)
+--- litellm: chat round-trip
+qwen3.6-max -> OK   ornith-max -> OK   laguna-max -> OK   qwen3.8-max -> OK
+--- litellm: embeddings
+1024
+--- litellm: no closed-weight model or router registered
+ok
+--- open-webui: health
+healthy
+version 0.11.3  auth=false
+--- open-webui: models via LiteLLM
+embed / laguna-max / ornith-max / qwen3.6-max / qwen3.8-max
+--- open-webui: chat round-trip via qwen3.6-max
+OK
+--- buzz: readiness (health listener inside the container)
+readiness 200
+liveness on 127.0.0.1:3002: 200
+--- buzz: NIP-11
+Buzz Relay 0.2.1 nips=14 self=938eb3301c0c6c13...
+--- buzz: community host == BUZZ_PUBLIC_HOST
+community host: 127.0.0.1:3002
+--- buzz: browser UI
+web UI served at http://127.0.0.1:3002/
+--- buzz: real client (buzz CLI from the sprig image, agent identity)
+channels visible: 0
+smoke test finished
+```
+
+### G8 — nothing published beyond `BIND_HOST`
+
+```
+$ docker compose ps --format '{{.Name}} {{.Ports}}'
+open-llm-stack-buzz-1 3000/tcp, 8080/tcp, 9102/tcp, 127.0.0.1:3002->3002/tcp
+open-llm-stack-buzz-db-1 5432/tcp
+open-llm-stack-buzz-minio-1 9000/tcp
+open-llm-stack-buzz-redis-1 6379/tcp
+open-llm-stack-litellm-1 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 5432/tcp
+open-llm-stack-open-webui-1 127.0.0.1:3001->8080/tcp
+```
+
+Every host mapping (`->`) starts with `127.0.0.1:`. The bare `3000/tcp, 8080/tcp, 9102/tcp` on `buzz-1` are the image's `EXPOSE` declarations (health + metrics listeners), not host bindings; db/redis/minio publish nothing.
+
+### Negative proof of the host rule
+
+```
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Accept: text/html' http://localhost:3002/
+404            # body: "relay: no community is configured for this host"
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Accept: text/html' http://127.0.0.1:3002/
+200
+```
+
+`localhost:3002` and `127.0.0.1:3002` are two different communities, exactly as §5.3 states.
+
+### Restart durability
+
+```
+$ docker compose restart buzz && sleep 20
+open-llm-stack-buzz-1 Up 20 seconds (healthy)
+$ docker compose logs --no-log-prefix buzz | grep -o '"Deployment community ensured",.*community":"[^"]*"'
+"Deployment community ensured","host":"127.0.0.1:3002","community":"18502f1c-9ef1-4fcb-b473-4dc7df797163"
+"Deployment community ensured","host":"127.0.0.1:3002","community":"18502f1c-9ef1-4fcb-b473-4dc7df797163"
+$ make test
+... (litellm + open-webui sections identical) ...
+readiness 200
+liveness on 127.0.0.1:3002: 200
+Buzz Relay 0.2.1 nips=14 self=938eb3301c0c6c13...
+community host: 127.0.0.1:3002
+web UI served at http://127.0.0.1:3002/
+channels visible: 0
+smoke test finished           # exit 0
+```
+
+Same community UUID (upsert, not re-create) and same relay pubkey (`938eb3301c0c6c13…`, from the pinned `BUZZ_RELAY_PRIVATE_KEY`) across the restart.
+
+### Timings
+
+| Event | Measured |
+|---|---|
+| `make up` wall clock (check-ports + up --wait + preflight) | 17.8 s |
+| buzz-db / buzz-redis / buzz-minio healthy, minio-init `Exited (0)` | ~7 s after start (faster than the ~16 s seen during planning) |
+| relay container start → `buzz-relay TCP listening addr=0.0.0.0:3002` | 17:13:49.6 → 17:13:57.5 = ~8 s |
+| relay container start → Compose `Healthy` | ~10 s (`Up 10 seconds (healthy)` in `ps -a`) |
+| `docker compose restart buzz` → first passing `/_readiness` probe | 17:15:18.1 → 17:15:38.3 = 20 s (healthy at the `sleep 20` mark) |
+| `make test` (all three layers, 4 chat round-trips through Ollama) | 58.6 s |
+
+### Fixes
+
+None. Every command in §5 passed on the first run with the files as written. `docker compose config` renders the redis healthcheck as `$$REDIS_PASSWORD` — that is display escaping only, the container receives `$REDIS_PASSWORD`; nothing to change.
+

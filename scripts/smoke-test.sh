@@ -56,7 +56,27 @@ test_openwebui() {
     | jq -r '.choices[0].message.content // ("ERROR: " + (.detail // .error // "unknown" | tostring))'
 }
 
+test_buzz() {
+  local host="${BUZZ_PUBLIC_HOST:-127.0.0.1:${BUZZ_PORT:-3002}}"
+  echo "--- buzz: readiness (health listener inside the container)"
+  docker compose exec -T buzz curl -fsS -o /dev/null -w 'readiness %{http_code}\n' http://127.0.0.1:8080/_readiness
+  curl -fsS -o /dev/null -w "liveness on ${host}: %{http_code}\n" "http://${host}/_liveness"
+  echo "--- buzz: NIP-11"
+  curl -fsS -H 'Accept: application/nostr+json' "http://${host}/" | jq -r '"\(.name) \(.version) nips=\(.supported_nips|length) self=\(.self[0:16])..."'
+  echo "--- buzz: community host == BUZZ_PUBLIC_HOST"
+  local seeded; seeded=$(docker compose logs --no-log-prefix buzz 2>/dev/null | grep -o '"Deployment community ensured","host":"[^"]*"' | tail -1 | sed 's/.*"host":"//;s/"$//')
+  [ "$seeded" = "$host" ] && echo "community host: $seeded" || fail "relay seeded community for '$seeded' but BUZZ_PUBLIC_HOST is '$host' -- clients will get 404"
+  if [ "${BUZZ_SERVE_GIT_WEB_GUI:-true}" = "true" ]; then
+    echo "--- buzz: browser UI"
+    curl -fsS -H 'Accept: text/html' "http://${host}/" | grep -q '<title>Buzz</title>' && echo "web UI served at http://${host}/"
+  fi
+  echo "--- buzz: real client (buzz CLI from the sprig image, agent identity)"
+  docker run --rm --network host -e BUZZ_PRIVATE_KEY="${BUZZ_AGENT_PRIVATE_KEY}" -e BUZZ_RELAY_URL="${BUZZ_RELAY_URL:-ws://${host}}" \
+    --entrypoint buzz ghcr.io/block/buzz-sprig:sha-e17cdd9 channels list | jq -r 'if type=="array" then "channels visible: \(length)" else . end'
+}
+
 # --- dispatcher (later plans add: openwebui, buzz, gitea) ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
+has_profile buzz && test_buzz
 echo "smoke test finished"
