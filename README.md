@@ -338,3 +338,7 @@ open-llm-stack/
 - [Ollama](https://github.com/ollama/ollama) and [llama.cpp](https://github.com/ggml-org/llama.cpp) — optional bundled backends.
 - [MinIO](https://github.com/minio/minio) — S3-compatible media store behind the relay.
 - Postgres and Redis, as pinned in `docker-compose.yml`.
+
+## License
+
+Apache-2.0. See `LICENSE`. The bundled services keep their own licenses (Buzz is Apache-2.0; LiteLLM, Open WebUI, Gitea, Ollama, llama.cpp and MinIO under their respective terms).
