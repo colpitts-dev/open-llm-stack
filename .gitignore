@@ -1,0 +1,7 @@
+examples/
+.env
+proxy/config.yaml
+docker-compose.override.yml
+models/
+*.gguf
+.DS_Store
