@@ -1,0 +1,91 @@
+# proxy/config.yaml.example -- copy to proxy/config.yaml (gitignored; `make init` does this) and edit
+# to match the models YOUR backend actually serves. This sample registers the tags present on the
+# project's reference host (Ollama). THE REGISTRY IS HAND-MAINTAINED: nothing discovers models.
+#
+# max_input_tokens = physical_window - max_output_tokens - 8192   (template/tool scaffolding)
+# The physical window (num_ctx in Ollama, -c in llama.cpp) is set at the BACKEND, not here, and is
+# not enforced anywhere: exceed it and the backend silently drops the oldest tokens.
+#
+# Prefixes: ollama_chat/<tag> for Ollama chat models (applies the model's chat template; plain
+# ollama/ degrades tool calling); ollama/<tag> for Ollama embeddings; openai/<name> + api_base for
+# llama.cpp / vLLM / any OpenAI-compatible server. Never register a closed-weight model or a router.
+# Adding a model = edit this file + `make reload`.
+
+model_list:
+  - model_name: qwen3.6-max
+    litellm_params:
+      model: ollama_chat/qwen3.6-max
+      api_base: os.environ/LLM_BASE_URL
+    model_info:
+      mode: chat
+      max_input_tokens: 237568        # 262144 - 16384 - 8192
+      max_output_tokens: 16384
+      supports_vision: true
+      model_revision: "ollama:qwen3.6-max:2026-09-12"
+      execution_locus: local
+
+  - model_name: ornith-max
+    litellm_params:
+      model: ollama_chat/ornith-max
+      api_base: os.environ/LLM_BASE_URL
+    model_info:
+      mode: chat
+      max_input_tokens: 237568
+      max_output_tokens: 16384
+      model_revision: "ollama:ornith-max:2026-09-12"
+      execution_locus: local
+
+  - model_name: laguna-max
+    litellm_params:
+      model: ollama_chat/laguna-max
+      api_base: os.environ/LLM_BASE_URL
+    model_info:
+      mode: chat
+      max_input_tokens: 237568
+      max_output_tokens: 16384
+      model_revision: "ollama:laguna-max:2026-09-12"
+      execution_locus: local
+
+  - model_name: qwen3.8-max
+    litellm_params:
+      model: ollama_chat/qwen3.8-max
+      api_base: os.environ/LLM_BASE_URL
+    model_info:
+      mode: chat
+      max_input_tokens: 106496        # operator capped this tag's window at 131072 for VRAM headroom
+      max_output_tokens: 16384
+      model_revision: "ollama:qwen3.8-max:2026-09-12"
+      execution_locus: local
+
+  - model_name: embed
+    litellm_params:
+      model: ollama/embed               # plain ollama/ is correct for embeddings
+      api_base: os.environ/LLM_BASE_URL
+    model_info:
+      mode: embedding
+      model_revision: "ollama:embed:2026-09-12"
+      execution_locus: local
+
+  # Also present on the reference host -- uncomment to register (same window formula applies):
+  # ornith-1.5:35b, laguna-xs-2.1, qwen3.8:27b, qwen3.6:35b (chat), qwen3-embedding:0.6b (embedding)
+
+  # --- llama.cpp / vLLM / LM Studio (OpenAI-compatible) example ---
+  # - model_name: my-gguf-model
+  #   litellm_params:
+  #     model: openai/my-gguf-model
+  #     api_base: http://llamacpp:8080/v1     # bundled profile; or http://host.docker.internal:8080/v1
+  #     api_key: sk-unused                     # the client requires *a* key; the server ignores it
+  #   model_info:
+  #     mode: chat
+  #     max_input_tokens: 24576               # 32768 - 4096 - 8192 -- match your -c
+  #     max_output_tokens: 4096
+  #     execution_locus: local
+
+litellm_settings:
+  drop_params: true      # unsupported client params are dropped, not errored -- backends vary
+  num_retries: 0         # a retry produces a second generation attributed to the first
+  request_timeout: 900   # long prefills on large local contexts
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

@@ -490,6 +490,152 @@ sed -i 's|^LLM_BASE_URL=.*|LLM_BASE_URL=http://host.docker.internal:11434|' .env
 - `init.sh` already generates the Buzz and agent keys so plan 03/06 need no extra bootstrap.
 - Known benign log line: `prisma:warn Prisma doesn't know which engines to download for the Linux distro "wolfi"`.
 
-## 8. Execution report (fill in)
+## 8. Execution report
 
-Record real gate output, any deviation from this plan, and any fix you had to make.
+**Date:** 2026-09-12. **Host:** reference host (Ollama at 0.0.0.0:11434, outside this project). **Result:** every gate passed on the first run; no fix to any script, compose file or env was needed. Stack left running, `.env` restored to `LLM_BASE_URL=http://host.docker.internal:11434`.
+
+### G0 -- compose validity
+
+```
+$ for p in "" litellm; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: '$p'"; done
+G0 ok: ''
+G0 ok: 'litellm'
+$ COMPOSE_PROFILES=litellm docker compose config --services
+litellm-db
+litellm
+```
+
+### G1 -- check-ports.sh (positive and negative)
+
+```
+$ ./scripts/check-ports.sh
+ports ok                                  # exit 0
+
+$ python3 -m http.server 3003 --bind 127.0.0.1 &   # simulate a foreign process on a stack port
+$ ./scripts/check-ports.sh
+port 3003: BUSY -- LISTEN 0      5               127.0.0.1:3003  0.0.0.0:* users:(("python3",pid=165926,fd=3))
+Free the ports above (or change *_PORT in .env) and re-run make up.
+exit=1
+$ kill 165926 && ./scripts/check-ports.sh
+ports ok
+```
+
+### Bring-up -- `make init && make up && docker compose ps` (57.6 s wall clock)
+
+```
+./scripts/init.sh
+init complete. Next: check LLM_BASE_URL in .env and the models in proxy/config.yaml, then: make up
+./scripts/check-ports.sh
+ports ok
+docker compose up -d --wait
+ Network open-llm-stack Created
+ Volume open-llm-stack_litellm-db-data Created
+ Container open-llm-stack-litellm-db-1 Healthy
+ Container open-llm-stack-litellm-1 Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+NAME                          IMAGE                             SERVICE      STATUS                    PORTS
+open-llm-stack-litellm-1      ghcr.io/berriai/litellm:v1.89.7   litellm      Up 46 seconds (healthy)   127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1   postgres:17.11-alpine             litellm-db   Up 56 seconds (healthy)   5432/tcp
+```
+
+Timings: litellm-db healthy in ~10 s; litellm healthy ~46 s after start (start_period 30 s + first 15 s probe). Only log noise: the known benign `prisma:warn Prisma doesn't know which engines to download for the Linux distro "wolfi"` (twice). No errors or tracebacks.
+
+### G2 -- preflight.sh
+
+```
+$ ./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+exit=0
+```
+
+### G3 -- `make test` (52.1 s wall clock; all four chat models already warm on the host)
+
+```
+--- litellm: registry
+embed
+laguna-max
+ornith-max
+qwen3.6-max
+qwen3.8-max
+qwen3.6-max	237568	local
+ornith-max	237568	local
+laguna-max	237568	local
+qwen3.8-max	106496	local
+embed	null	local
+--- litellm: chat round-trip (every mode:chat model; reasoning models need a generous max_tokens)
+qwen3.6-max -> OK
+ornith-max -> OK
+laguna-max -> OK
+qwen3.8-max -> OK
+--- litellm: embeddings
+1024
+--- litellm: no closed-weight model or router registered
+ok
+smoke test finished
+exit=0
+```
+
+5 models registered, every chat model returned exactly `OK`, embedding vector length 1024, scope check `ok`. (`embed` has `max_input_tokens: null` -- expected; the embedding entry sets no window in `proxy/config.yaml`.)
+
+### G8 -- loopback only
+
+```
+$ docker compose ps --format '{{.Name}} {{.Ports}}'
+open-llm-stack-litellm-1 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 5432/tcp
+```
+
+The single published mapping starts with `127.0.0.1:`. `5432/tcp` on litellm-db is the image's EXPOSE (container-network only, no host binding).
+
+### G2 negative path, then restore
+
+```
+$ sed -i 's|^LLM_BASE_URL=.*|LLM_BASE_URL=http://127.0.0.1:59999|' .env && docker compose up -d --wait litellm && ./scripts/preflight.sh; echo "exit=$?"
+ Container open-llm-stack-litellm-1 Recreated
+ Container open-llm-stack-litellm-1 Healthy           # 29.7 s
+FAIL http://127.0.0.1:59999 unreachable from inside the litellm container: <urlopen error [Errno 111] Connection refused>
+
+Which case are you in?
+  1. Backend is a container      -> put it on the 'open-llm-stack' network and use http://<container>:<port>, ...
+  2. Host process bound to 0.0.0.0 -> http://host.docker.internal:<port> (extra_hosts is already set on litellm)
+  3. Host process bound to 127.0.0.1 only -> host.docker.internal resolves to the Docker bridge gateway, never loopback, ...
+exit=1
+
+$ sed -i 's|^LLM_BASE_URL=.*|LLM_BASE_URL=http://host.docker.internal:11434|' .env && docker compose up -d --wait litellm && ./scripts/preflight.sh
+ Container open-llm-stack-litellm-1 Recreated
+ Container open-llm-stack-litellm-1 Healthy           # 29.4 s
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+exit=0
+```
+
+Deviation from the §6 command as written: `--wait` was added to `docker compose up -d litellm` so preflight runs against a healthy container after the env-triggered recreate (§6 text left unchanged; the check itself is a pure network probe and does not depend on it).
+
+### Idempotency -- `./scripts/init.sh && ./scripts/init.sh`
+
+```
+$ md5sum .env proxy/config.yaml
+78ae295051fb1c29d1c60285b6189c7c  .env
+0b0931a54b8b551584f43cea15bb29e4  proxy/config.yaml
+$ ./scripts/init.sh && ./scripts/init.sh
+init complete. Next: check LLM_BASE_URL in .env and the models in proxy/config.yaml, then: make up
+init complete. Next: check LLM_BASE_URL in .env and the models in proxy/config.yaml, then: make up
+$ md5sum .env proxy/config.yaml
+78ae295051fb1c29d1c60285b6189c7c  .env
+0b0931a54b8b551584f43cea15bb29e4  proxy/config.yaml
+```
+
+Both runs print only the final line; checksums unchanged, so no secret was regenerated.
+
+### Final state
+
+```
+open-llm-stack-litellm-1 Up (healthy) 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 Up (healthy) 5432/tcp
+LLM_BASE_URL=http://host.docker.internal:11434
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+```
+
+### Fixes made
+
+None. No script, compose, env or image tag was changed.

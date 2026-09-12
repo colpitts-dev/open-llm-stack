@@ -1,0 +1,54 @@
+# Open LLM Stack -- see docs/spec.md. Every layer is a Compose profile; COMPOSE_PROFILES in .env
+# selects what runs. No depends_on ever crosses a profile boundary (spec §4.3).
+name: open-llm-stack
+
+networks:
+  default:
+    name: open-llm-stack
+
+volumes:
+  litellm-db-data:
+
+services:
+  # ---------------------------------------------------------------- profile: litellm (port 3000)
+  litellm-db:
+    image: postgres:17.11-alpine
+    profiles: [litellm]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?run make init}
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.89.7   # verified 2026-09-12; never 1.82.7/1.82.8 (compromised PyPI releases)
+    profiles: [litellm]
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--num_workers", "1"]   # one worker: single-GPU hosts thrash otherwise
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD}@litellm-db:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run make init}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./proxy/config.yaml:/app/config.yaml:ro   # gitignored; make init copies it from the .example
+    extra_hosts:
+      - "host.docker.internal:host-gateway"       # bring-your-own backend running on the host
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${LITELLM_PORT:-3000}:4000"
+    healthcheck:
+      # image has no curl/wget; python3 is there
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
