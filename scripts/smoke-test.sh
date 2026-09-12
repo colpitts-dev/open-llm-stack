@@ -75,8 +75,28 @@ test_buzz() {
     --entrypoint buzz ghcr.io/block/buzz-sprig:sha-e17cdd9 channels list | jq -r 'if type=="array" then "channels visible: \(length)" else . end'
 }
 
+test_gitea() {
+  local base="http://${BIND_HOST}:${GITEA_PORT:-3003}"
+  echo "--- gitea: health + version"
+  curl -fsS "$base/api/healthz" | jq -r '"healthz: \(.status)"'
+  curl -fsS "$base/api/v1/version" | jq -r '"version \(.version)"'
+  [ -n "${GITEA_ADMIN_TOKEN:-}" ] || { echo "(GITEA_ADMIN_TOKEN blank -- run make gitea-bootstrap for the API checks)"; return 0; }
+  local auth="Authorization: token ${GITEA_ADMIN_TOKEN}"
+  echo "--- gitea: token works"
+  curl -fsS -H "$auth" "$base/api/v1/user" | jq -r '"user \(.login) admin=\(.is_admin)"'
+  echo "--- gitea: create + clone + delete a private repo"
+  local repo="smoke-$(date +%s)"
+  curl -fsS -H "$auth" -H 'Content-Type: application/json' -d "{\"name\":\"$repo\",\"private\":true,\"auto_init\":true}" \
+    "$base/api/v1/user/repos" | jq -r '"created \(.full_name) private=\(.private) clone=\(.clone_url)"'
+  local tmp; tmp=$(mktemp -d)
+  git -c http.extraHeader="$auth" clone -q "$base/${GITEA_ADMIN_USER}/${repo}.git" "$tmp/repo" && echo "cloned ($(ls "$tmp/repo" | tr '\n' ' '))"
+  rm -rf "$tmp"
+  curl -fsS -X DELETE -H "$auth" "$base/api/v1/repos/${GITEA_ADMIN_USER}/${repo}" && echo "deleted $repo"
+}
+
 # --- dispatcher (later plans add: openwebui, buzz, gitea) ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
 has_profile buzz && test_buzz
+has_profile gitea && test_gitea
 echo "smoke test finished"

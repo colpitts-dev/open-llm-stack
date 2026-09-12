@@ -164,4 +164,124 @@ docker compose ps --format '{{.Name}} {{.Ports}}'      # G8: no 22/tcp published
 - `bootstrap-gitea.sh` edits `.env`; `make test` re-sources it, so no restart is needed.
 - The `(healthz)` response also lists DB/cache checks; only `status` is asserted.
 
-## 7. Execution report (fill in)
+## 7. Execution report
+
+**Date:** 2026-09-12. Host: reference Linux host, plans 01–03 already running and healthy. Image `docker.gitea.com/gitea:1.27.3` (pre-pulled; no internet). All gates passed on the first run; no file changed beyond this report.
+
+### G0 — compose config (both profile sets)
+
+```
+$ for p in gitea litellm,openwebui,buzz,gitea; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: $p"; done
+G0 ok: gitea
+G0 ok: litellm,openwebui,buzz,gitea
+```
+
+### G1 — `make up && docker compose ps`
+
+```
+ Container open-llm-stack-gitea-1 Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+make up wall time: 11s
+
+NAME                          IMAGE                                   SERVICE     STATUS                    PORTS
+open-llm-stack-buzz-1         ghcr.io/block/buzz:sha-e17cdd9          buzz        Up 7 minutes (healthy)    3000/tcp, 8080/tcp, 9102/tcp, 127.0.0.1:3002->3002/tcp
+open-llm-stack-buzz-db-1      postgres:17.11-alpine                   buzz-db     Up 8 minutes (healthy)    5432/tcp
+open-llm-stack-buzz-minio-1   quay.io/minio/minio:RELEASE.2025-09-07  buzz-minio  Up 8 minutes (healthy)    9000/tcp
+open-llm-stack-buzz-redis-1   redis:7.4.11-alpine                     buzz-redis  Up 8 minutes (healthy)    6379/tcp
+open-llm-stack-gitea-1        docker.gitea.com/gitea:1.27.3           gitea       Up 10 seconds (healthy)   22/tcp, 127.0.0.1:3003->3000/tcp
+open-llm-stack-litellm-1      ghcr.io/berriai/litellm:v1.89.7         litellm     Up 36 minutes (healthy)   127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1   postgres:17.11-alpine                   litellm-db  Up 38 minutes (healthy)   5432/tcp
+open-llm-stack-open-webui-1   ghcr.io/open-webui/open-webui:v0.11.3   open-webui  Up 19 minutes (healthy)   127.0.0.1:3001->8080/tcp
+```
+
+Time to healthy (from `docker inspect` health log): container started `17:22:21.5Z`; probe at +5 s → exit 7 (connection refused, still booting); probe at +10 s → exit 0. **Gitea healthy in ~10 s.** Every pre-existing container stayed healthy; none was recreated.
+
+### G2 — version
+
+```
+$ curl -fsS http://127.0.0.1:3003/api/v1/version
+{"version":"1.27.3"}
+```
+
+### G3/G4 — bootstrap, twice (idempotent)
+
+```
+$ make gitea-bootstrap          # run 1
+created admin user stackadmin
+GITEA_ADMIN_TOKEN written to .env
+$ make gitea-bootstrap          # run 2
+admin user stackadmin already exists
+GITEA_ADMIN_TOKEN already set in .env (pass --rotate to mint a new one)
+$ grep -c '^GITEA_ADMIN_TOKEN=.\{20,\}' .env
+1
+```
+
+Token is 40 chars. `gitea admin user list` shows exactly one user: `stackadmin stackadmin@localhost IsActive=true IsAdmin=true`.
+
+### G5/G6 — `make test` (gitea section)
+
+```
+--- gitea: health + version
+healthz: pass
+version 1.27.3
+--- gitea: token works
+user stackadmin admin=true
+--- gitea: create + clone + delete a private repo
+created stackadmin/smoke-1789233804 private=true clone=http://127.0.0.1:3003/stackadmin/smoke-1789233804.git
+cloned (README.md )
+deleted smoke-1789233804
+smoke test finished
+make test exit=0
+```
+
+Full `make test` wall time 36.1 s (litellm chat round-trips dominate); the gitea section itself runs in ~0.4 s. The litellm, openwebui and buzz sections passed unchanged. After the run, `GET /api/v1/user/repos` → 0 repos (cleanup verified).
+
+### G8 — published ports
+
+```
+$ docker compose ps --format '{{.Name}} {{.Ports}}'
+open-llm-stack-buzz-1 3000/tcp, 8080/tcp, 9102/tcp, 127.0.0.1:3002->3002/tcp
+open-llm-stack-buzz-db-1 5432/tcp
+open-llm-stack-buzz-minio-1 9000/tcp
+open-llm-stack-buzz-redis-1 6379/tcp
+open-llm-stack-gitea-1 22/tcp, 127.0.0.1:3003->3000/tcp
+open-llm-stack-litellm-1 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 5432/tcp
+open-llm-stack-open-webui-1 127.0.0.1:3001->8080/tcp
+$ docker port open-llm-stack-gitea-1
+3000/tcp -> 127.0.0.1:3003
+```
+
+Host mappings (`->`) are exactly `127.0.0.1:3000`, `3001`, `3002`, `3003`. The `22/tcp` in the gitea column is the image's `EXPOSE` metadata (container-internal, no host mapping); `docker port` confirms only `3000/tcp` is published. Nothing binds `0.0.0.0`.
+
+### Browser-facing sanity
+
+```
+$ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3003/            → 200
+$ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3003/user/login  → 200
+```
+
+### Token rotation
+
+```
+$ ./scripts/bootstrap-gitea.sh --rotate
+admin user stackadmin already exists
+GITEA_ADMIN_TOKEN written to .env
+```
+
+Old token `2924f4…` (40 chars) → new token `0a001a…` (40 chars); `.env` still has exactly one `GITEA_ADMIN_TOKEN=` line. `make test` re-run with the rotated token (no restart, per §6): gitea section passed identically (`healthz: pass`, `version 1.27.3`, `user stackadmin admin=true`, `created stackadmin/smoke-1789233932 … private=true`, `cloned (README.md )`, `deleted smoke-1789233932`), gitea section 0.4 s. That second full run took 102.6 s only because the first litellm chat round-trip waited ~60 s on an Ollama model reload; unrelated to Gitea.
+
+### Timings
+
+| What | Time |
+|---|---|
+| `make up` (gitea added to a running stack) | 11 s wall |
+| Gitea container start → healthy | ~10 s (2nd probe) |
+| `make gitea-bootstrap` (each run) | < 3 s |
+| gitea smoke section | ~0.4 s |
+| full `make test` | 36.1 s (run 1), 102.6 s (run 2, litellm model reload) |
+
+### Fixes
+
+None. Every command in §5 passed as written; no change to `docker-compose.yml`, `scripts/bootstrap-gitea.sh`, `scripts/smoke-test.sh` or any image tag. Stack left running; `.env` holds the rotated, valid `GITEA_ADMIN_TOKEN`. Nothing committed.

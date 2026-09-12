@@ -13,6 +13,7 @@ volumes:
   buzz-redis-data:
   buzz-minio-data:
   buzz-git-data:
+  gitea-data:
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -192,3 +193,27 @@ services:
       - mc alias set local http://buzz-minio:9000 "$0" "$1" && mc mb --ignore-existing local/buzz-media && mc anonymous set none local/buzz-media
       - ${BUZZ_S3_ACCESS_KEY}
       - ${BUZZ_S3_SECRET_KEY}
+
+  # ---------------------------------------------------------------- profile: gitea (port 3003)
+  gitea:
+    image: docker.gitea.com/gitea:1.27.3   # verified 2026-09-12 (Gitea publishes to its own registry)
+    profiles: [gitea]
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__security__INSTALL_LOCK: "true"       # skip the web installer
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__ROOT_URL: ${GITEA_PUBLIC_URL:-http://127.0.0.1:3003}/   # what clone URLs and links show
+      GITEA__service__DISABLE_REGISTRATION: "false"
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${GITEA_PORT:-3003}:3000"   # HTTP only; no SSH port published
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s

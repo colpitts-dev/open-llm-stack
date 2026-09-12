@@ -47,3 +47,13 @@ Closed relay (members only): set `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` and `RELAY
 External relay: remove `buzz` from `COMPOSE_PROFILES` and set `BUZZ_RELAY_URL=wss://your-relay.example` -- only the optional `buzz-agent` profile reads it.
 
 Data lives in the `buzz-db-data`, `buzz-redis-data`, `buzz-minio-data` and `buzz-git-data` volumes; back up `.env` too (the relay key and HMAC secret must stay stable).
+
+## Gitea (port 3003)
+
+http://127.0.0.1:3003 -- SQLite, HTTP only, install already locked. Create the admin account and an API token once:
+
+    make gitea-bootstrap        # uses GITEA_ADMIN_USER / GITEA_ADMIN_PASSWORD from .env, writes GITEA_ADMIN_TOKEN
+
+Log in with those credentials, or use the token: `curl -H "Authorization: token $GITEA_ADMIN_TOKEN" http://127.0.0.1:3003/api/v1/user`. Push over HTTP with the token (`git -c http.extraHeader="Authorization: token ..." push`) or with the user's password.
+
+External Gitea/GitHub: remove `gitea` from `COMPOSE_PROFILES`; nothing else in this stack depends on it. `GITEA_PUBLIC_URL` only controls the bundled instance's `ROOT_URL` (what its clone URLs show), so change it together with `GITEA_PORT` or `BIND_HOST`.

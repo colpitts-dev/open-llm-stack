@@ -1,6 +1,6 @@
 # Open LLM Stack — Rules for coding agents
 
-Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends and a Buzz LLM agent. Binding spec: `docs/spec.md`. Plans: `plans/01…07`. **Status:** plans 01–03 (LiteLLM, Open WebUI, Buzz relay) executed and validated 2026-09-12; plans 04–07 pending.
+Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends and a Buzz LLM agent. Binding spec: `docs/spec.md`. Plans: `plans/01…07`. **Status:** plans 01–04 (LiteLLM, Open WebUI, Buzz relay, Gitea) executed and validated 2026-09-12; plans 05–07 pending.
 
 ## Principles
 
