@@ -246,3 +246,46 @@ services:
     volumes:
       - ./models:/models:ro
     # --host 0.0.0.0 is safe here only because no ports: entry exists -- it binds inside the container only.
+
+  # ---------------------------------------------------------------- profile: buzz-agent (host network)
+  # An LLM agent living in the relay. Host network on purpose: the relay only accepts the exact host:port
+  # in BUZZ_PUBLIC_HOST (spec §5.3), so the agent connects to the same public URLs a human uses and works
+  # unchanged against an external relay or gateway. Nothing here depends_on another profile (spec §4.3).
+  buzz-agent:
+    image: ghcr.io/block/buzz-sprig:sha-e17cdd9   # same commit as the relay image
+    profiles: [buzz-agent]
+    restart: unless-stopped
+    network_mode: host
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        url="$${BUZZ_RELAY_URL/#ws:/http:}"; url="$${url/#wss:/https:}"
+        for i in $$(seq 1 60); do curl -fsS -o /dev/null "$$url/_liveness" && break; echo "waiting for relay at $$url"; sleep 2; done
+        buzz users set-profile --name "$$BUZZ_ACP_DISPLAY_NAME" --about "open-llm-stack agent (LiteLLM: $$OPENAI_COMPAT_MODEL)" >/dev/null 2>&1 \
+          && echo "profile name set: $$BUZZ_ACP_DISPLAY_NAME" || echo "could not set profile name (will retry on next restart)"
+        exec /usr/local/bin/sprig-entrypoint
+    environment:
+      # identity + relay
+      BUZZ_PRIVATE_KEY: ${BUZZ_AGENT_PRIVATE_KEY:?run make init}
+      BUZZ_RELAY_URL: ${BUZZ_RELAY_URL:-ws://127.0.0.1:3002}
+      BUZZ_ACP_DISPLAY_NAME: ${BUZZ_AGENT_NAME:-stack-agent}
+      # harness: run buzz-agent (no Goose in this image), give it the dev-mcp tools, answer anyone (open relay)
+      BUZZ_ACP_AGENT_COMMAND: buzz-agent
+      BUZZ_ACP_AGENT_ARGS: ""
+      BUZZ_ACP_MCP_COMMAND: buzz-dev-mcp
+      BUZZ_ACP_RESPOND_TO: anyone
+      # LLM through LiteLLM (OpenAI-compatible, Chat Completions)
+      BUZZ_AGENT_PROVIDER: openai
+      OPENAI_COMPAT_BASE_URL: ${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1
+      OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY:?run make init}
+      OPENAI_COMPAT_MODEL: ${BUZZ_AGENT_MODEL:-qwen3.6-max}
+      OPENAI_COMPAT_API: chat
+      BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-237568}   # = that model's max_input_tokens in proxy/config.yaml
+      BUZZ_AGENT_MAX_OUTPUT_TOKENS: "16384"                                      # = max_output_tokens
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 150s   # covers the relay-wait loop above

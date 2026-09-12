@@ -99,4 +99,5 @@ has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
 has_profile buzz && test_buzz
 has_profile gitea && test_gitea
+has_profile buzz-agent && ./scripts/buzz-smoke.sh
 echo "smoke test finished"

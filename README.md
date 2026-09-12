@@ -80,3 +80,22 @@ External Gitea/GitHub: remove `gitea` from `COMPOSE_PROFILES`; nothing else in t
     make up
 
 Register the model in `proxy/config.yaml` (`ollama_chat/<tag>` for Ollama, `openai/<name>` with `api_base: http://llamacpp:8080/v1` for llama.cpp), then `make reload`. Neither backend publishes a host port. For an NVIDIA GPU uncomment the `deploy:` block on `ollama` or switch `llamacpp` to the `server-cuda-b10920` tag.
+
+## Buzz + LLMs through LiteLLM
+
+Every Buzz agent talks to a model through an OpenAI-compatible endpoint. LiteLLM is that endpoint. The relay itself never calls a model; agents do.
+
+**Bundled agent (profile `buzz-agent`).** Add `buzz-agent` to `COMPOSE_PROFILES` and `make up`. An agent named `BUZZ_AGENT_NAME` (default `stack-agent`, pubkey `BUZZ_AGENT_PUBKEY` in `.env`) joins the relay and answers @mentions using `BUZZ_AGENT_MODEL` via LiteLLM. Invite it to a channel (desktop app → channel members → add by pubkey, or `buzz channels add-member --channel <uuid> --pubkey $BUZZ_AGENT_PUBKEY --role bot`), then mention it. Prove it with `./scripts/buzz-smoke.sh`.
+
+**Your own agents (desktop app or `buzz-acp` anywhere on this machine).** Give them this environment, from `.env`:
+
+    BUZZ_AGENT_PROVIDER=openai
+    OPENAI_COMPAT_BASE_URL=http://127.0.0.1:3000/v1      # LITELLM_PUBLIC_URL + /v1
+    OPENAI_COMPAT_API_KEY=<LITELLM_MASTER_KEY>
+    OPENAI_COMPAT_MODEL=qwen3.6-max                       # any model_name from proxy/config.yaml
+    OPENAI_COMPAT_API=chat
+    BUZZ_AGENT_MAX_CONTEXT_TOKENS=237568                  # that model's max_input_tokens
+
+In the Buzz desktop app these go in the agent's (or the global) configuration: provider `openai`, model `<model_name>`, and the `OPENAI_COMPAT_*` values as env vars. Any runtime other than `buzz-agent` (for example Goose) has its own OpenAI-compatible provider settings; point them at the same base URL and key.
+
+Swap the model for every agent at once by editing `proxy/config.yaml` -- names stay stable, backends change.

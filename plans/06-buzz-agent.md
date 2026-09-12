@@ -184,4 +184,116 @@ BUZZ_RELAY_URL=wss://relay.example.test docker compose config | grep -E 'BUZZ_RE
 - `BUZZ_AGENT_MAX_CONTEXT_TOKENS` and `BUZZ_AGENT_MAX_OUTPUT_TOKENS` mirror the registry entry for `BUZZ_AGENT_MODEL`; changing the model means changing these too (spec §6 numbers).
 - Closed relay (`BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`): also run `docker compose exec buzz buzz-admin add-member --pubkey $BUZZ_AGENT_PUBKEY` and consider `BUZZ_ACP_RESPOND_TO=owner-only` with `BUZZ_ACP_AGENT_OWNER=<your pubkey>`.
 
-## 7. Execution report (fill in)
+## 7. Execution report
+
+Executed 2026-09-12 (15:13–15:21 ADT) on the reference host against the live stack, `COMPOSE_PROFILES=litellm,openwebui,buzz,gitea,buzz-agent`. No file changed except the `COMPOSE_PROFILES` line in `.env` (this plan's step 2). Nothing committed. Stack left running with the `buzz-agent` profile on.
+
+**G0 — compose valid per profile combination**
+
+```
+G0 ok: buzz-agent
+G0 ok: litellm,buzz,buzz-agent
+G0 ok: litellm,openwebui,buzz,gitea,buzz-agent
+```
+`docker compose config | grep -A6 entrypoint:` shows the script with `$$` (Compose's display escaping of a literal `$`); the container receives single `$`.
+
+**Step 3 — `make up`** (relay already up, so the agent's wait loop exited on its first probe)
+
+```
+ Container open-llm-stack-buzz-1 Healthy
+ Container open-llm-stack-open-webui-1 Healthy
+ Container open-llm-stack-buzz-agent-1 Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+make up  6.165 total
+open-llm-stack-buzz-agent-1   ghcr.io/block/buzz-sprig:sha-e17cdd9   "/bin/bash -ec 'url=…"   buzz-agent   6 seconds ago   Up 5 seconds (healthy)
+```
+Time to healthy for buzz-agent: ~5 s after container creation (`pgrep -f buzz-acp` passes as soon as the entrypoint execs `buzz-acp`); all other eight services stayed healthy.
+
+**Step 4 — agent logs** (`docker compose logs buzz-agent | tail -20`, trimmed)
+
+```
+profile name set: stack-agent
+INFO buzz_acp: buzz-acp starting: relay=ws://127.0.0.1:3002 pubkey=e02c6e79… agent_cmd=buzz-agent mcp_cmd=buzz-dev-mcp … subscribe=Mentions … respond_to=anyone
+INFO buzz_acp: agent initialized agent=0 name="buzz-agent" steering_supported=false
+INFO buzz_acp: connected to relay at ws://127.0.0.1:3002
+INFO buzz_acp: subscribed to membership notifications
+INFO buzz_acp: discovered 0 channel(s)
+WARN buzz_acp: no channel subscriptions resolved — agent will sit idle
+INFO buzz_acp: presence set to online
+```
+
+**G7 — `./scripts/buzz-smoke.sh`** (three passes, one model-side miss; timed)
+
+Attempt 1 (miss, 4:12.8 wall clock):
+```
+channel 9ce1d78a-ed46-41ad-b13f-fc3778f663c4
+mention sent; waiting for the agent (up to 240s)
+FAIL: no reply within 240s. Inspect: docker compose logs buzz-agent
+```
+Diagnosis: the membership notification arrived (`subscribing to new channel channel_id=9ce1d78a…`), `buzz-dev-mcp` initialised, LiteLLM logged `POST /v1/chat/completions 200 OK`, and the agent logged one `llm: call completed model="qwen3.6-max" duration_ms=1291 output_tokens=Some(36) stop=EndTurn` — no tool call, no message posted. A direct LiteLLM probe with the same prompt shows `qwen3.6-max` puts its output in `reasoning_content` with `content: ""` until thinking finishes, so a short `EndTurn` turn with empty content leaves nothing for the harness to post. This is the nondeterministic miss spec §5.4 already documents, not infrastructure: the relay, membership, LiteLLM and Ollama path all worked.
+
+Attempt 2 (pass, 14.98 s wall clock):
+```
+channel e65a7a7e-eab6-4ec2-923e-83c3e40b4595
+mention sent; waiting for the agent (up to 240s)
+agent replied after ~10s: PONG
+```
+Agent log for this turn: `membership notification … e65a7a7e…` at 18:19:15; three LLM calls — `output_tokens=182 stop=ToolUse` (5.5 s), `output_tokens=208 stop=ToolUse` (1.3 s), `output_tokens=43 stop=EndTurn` (0.4 s); reply visible at ~10 s.
+
+**Step 6 — `make test`** (51.5 s, exit 0; trimmed to the section headers and G7)
+
+```
+--- litellm: chat round-trip … qwen3.6-max -> OK  ornith-max -> OK  laguna-max -> OK  qwen3.8-max -> OK
+--- litellm: embeddings  1024
+--- open-webui: chat round-trip via qwen3.6-max  OK
+--- buzz: readiness  readiness 200 / liveness on 127.0.0.1:3002: 200
+--- buzz: community host == BUZZ_PUBLIC_HOST  community host: 127.0.0.1:3002
+--- buzz: real client (buzz CLI from the sprig image, agent identity)  channels visible: 2
+--- gitea: create + clone + delete a private repo  created … cloned (README.md ) deleted smoke-1789237218
+channel d44e336c-12c9-4107-885a-3811aabefb7c
+mention sent; waiting for the agent (up to 240s)
+agent replied after ~10s: PONG
+smoke test finished
+```
+
+**Step 7 — external relay rendering** (`BUZZ_RELAY_URL=wss://relay.example.test docker compose config | grep BUZZ_RELAY_URL`)
+
+```
+        url="$${BUZZ_RELAY_URL/#ws:/http:}"; url="$${url/#wss:/https:}"
+      BUZZ_RELAY_URL: wss://relay.example.test
+```
+Command-line env overrides `.env`; the agent is the only consumer, no other service's rendering changed.
+
+**Step 8 — restart durability**
+
+```
+ Container open-llm-stack-buzz-agent-1 Started        (restart: 0.21 s)
+buzz-agent-1  | profile name set: stack-agent
+buzz-agent-1  | 2026-09-12T18:20:42.555376Z  INFO buzz_acp: connected to relay at ws://127.0.0.1:3002
+open-llm-stack-buzz-agent-1 … Up 30 seconds (healthy)
+channel bc56098b-cfbc-434e-9f02-37aed00c6c9b
+mention sent; waiting for the agent (up to 240s)
+agent replied after ~10s: PONG        (14.93 s wall clock)
+```
+Reconnected ~0.1 s after the container started (relay was already live).
+
+**G8 — loopback only** (`docker compose ps --format '{{.Name}} {{.Ports}}'`)
+
+```
+open-llm-stack-buzz-1 3000/tcp, 8080/tcp, 9102/tcp, 127.0.0.1:3002->3002/tcp
+open-llm-stack-buzz-agent-1
+open-llm-stack-buzz-db-1 5432/tcp
+open-llm-stack-buzz-minio-1 9000/tcp
+open-llm-stack-buzz-redis-1 6379/tcp
+open-llm-stack-gitea-1 22/tcp, 127.0.0.1:3003->3000/tcp
+open-llm-stack-litellm-1 127.0.0.1:3000->4000/tcp
+open-llm-stack-litellm-db-1 5432/tcp
+open-llm-stack-open-webui-1 127.0.0.1:3001->8080/tcp
+```
+buzz-agent publishes nothing (`network_mode: host`); every published mapping is `127.0.0.1:`.
+
+**Smoke channels created** (all `--ttl 3600`, type stream, visibility open): `9ce1d78a-ed46-41ad-b13f-fc3778f663c4` (attempt 1, no reply), `e65a7a7e-eab6-4ec2-923e-83c3e40b4595` (PONG), `d44e336c-12c9-4107-885a-3811aabefb7c` (make test, PONG), `bc56098b-cfbc-434e-9f02-37aed00c6c9b` (post-restart, PONG).
+
+**Fixes:** none. No image tag, `$$` escape, script or compose change was needed.
+
