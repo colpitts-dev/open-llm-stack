@@ -7,7 +7,7 @@ A local first, privacy focused, open weighted llm development stack. Bring your 
 - litellm - api gateway
 - open web ui - basic chat
 - buzz.xyz Relay - team collaboration
-- gitea - version control
+- gitea - local version control + web ui
 
 ## Quick start
 
@@ -17,12 +17,12 @@ Requires Docker (Compose v2) and an OpenAI-compatible LLM backend you already ru
     make up       # starts every layer in COMPOSE_PROFILES, waits for healthy, checks your backend
     make test     # smoke-tests every running layer
 
-| Service | URL |
-|---|---|
+| Service                         | URL                                                               |
+| ------------------------------- | ----------------------------------------------------------------- |
 | LiteLLM (OpenAI-compatible API) | http://127.0.0.1:3000/v1 -- key: `LITELLM_MASTER_KEY` from `.env` |
-| Open WebUI | http://127.0.0.1:3001 |
-| Buzz relay | ws://127.0.0.1:3002 |
-| Gitea | http://127.0.0.1:3003 |
+| Open WebUI                      | http://127.0.0.1:3001                                             |
+| Buzz relay                      | ws://127.0.0.1:3002                                               |
+| Gitea                           | http://127.0.0.1:3003                                             |
 
 Full documentation: `docs/spec.md` (architecture, every env var, verified facts). Plans in `plans/` build the layers one at a time.
 
@@ -57,3 +57,26 @@ http://127.0.0.1:3003 -- SQLite, HTTP only, install already locked. Create the a
 Log in with those credentials, or use the token: `curl -H "Authorization: token $GITEA_ADMIN_TOKEN" http://127.0.0.1:3003/api/v1/user`. Push over HTTP with the token (`git -c http.extraHeader="Authorization: token ..." push`) or with the user's password.
 
 External Gitea/GitHub: remove `gitea` from `COMPOSE_PROFILES`; nothing else in this stack depends on it. `GITEA_PUBLIC_URL` only controls the bundled instance's `ROOT_URL` (what its clone URLs show), so change it together with `GITEA_PORT` or `BIND_HOST`.
+
+## Bring your own LLM backend
+
+`LLM_BASE_URL` in `.env` must be reachable **from inside the litellm container** -- not the same thing as reachable from your shell. `make up` runs `scripts/preflight.sh`, which tests exactly that and tells you which case you are in:
+
+1. **Backend is a container** -- attach it to the `open-llm-stack` network (`docker network connect open-llm-stack <container>`) and use `http://<container>:<port>`.
+2. **Host process bound to 0.0.0.0** (Ollama's default in Docker, LM Studio with "serve on network") -- `http://host.docker.internal:<port>`. Already wired: litellm has `extra_hosts: host.docker.internal:host-gateway`.
+3. **Host process bound to 127.0.0.1 only** -- `host.docker.internal` resolves to the Docker bridge gateway, never loopback, so it cannot be reached. Bind the backend to the `docker0` address instead, or use case 1. Never bind an unauthenticated inference server to 0.0.0.0 on an untrusted LAN; put LiteLLM (master-key auth) in front.
+
+### Or let the stack run one
+
+    # Ollama -- models pulled on demand, stored in the ollama-data volume
+    COMPOSE_PROFILES=litellm,openwebui,buzz,gitea,ollama
+    LLM_BASE_URL=http://ollama:11434
+    make up && docker compose exec ollama ollama pull qwen3:0.6b      # any tag you want; then register it in proxy/config.yaml + make reload
+
+    # llama.cpp -- you supply a GGUF in ./models/ (gitignored)
+    COMPOSE_PROFILES=litellm,openwebui,buzz,gitea,llamacpp
+    LLM_BASE_URL=http://llamacpp:8080
+    LLAMACPP_MODEL_FILE=your-model.gguf          # LLAMACPP_CTX_SIZE caps the context; 0 = model default
+    make up
+
+Register the model in `proxy/config.yaml` (`ollama_chat/<tag>` for Ollama, `openai/<name>` with `api_base: http://llamacpp:8080/v1` for llama.cpp), then `make reload`. Neither backend publishes a host port. For an NVIDIA GPU uncomment the `deploy:` block on `ollama` or switch `llamacpp` to the `server-cuda-b10920` tag.

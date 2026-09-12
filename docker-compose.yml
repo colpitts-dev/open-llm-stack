@@ -14,6 +14,7 @@ volumes:
   buzz-minio-data:
   buzz-git-data:
   gitea-data:
+  ollama-data:
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -217,3 +218,31 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  # ---------------------------------------------------------------- optional backends (no host ports)
+  # Enable with COMPOSE_PROFILES=...,ollama  and  LLM_BASE_URL=http://ollama:11434
+  ollama:
+    image: ollama/ollama:0.34.0   # verified 2026-09-12
+    profiles: [ollama]
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    # No ports: the Ollama API has no auth of its own; it is reachable only from this compose network.
+    # NVIDIA GPU: uncomment (needs nvidia-container-toolkit on the host):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # Enable with COMPOSE_PROFILES=...,llamacpp  LLM_BASE_URL=http://llamacpp:8080  LLAMACPP_MODEL_FILE=<file in ./models>
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-b10920   # CPU build, verified 2026-09-12; GPU: server-cuda-b10920 (same build number)
+    profiles: [llamacpp]
+    restart: unless-stopped
+    command: ["-m", "/models/${LLAMACPP_MODEL_FILE:-your-model.gguf}", "--host", "0.0.0.0", "--port", "8080", "-c", "${LLAMACPP_CTX_SIZE:-0}"]
+    volumes:
+      - ./models:/models:ro
+    # --host 0.0.0.0 is safe here only because no ports: entry exists -- it binds inside the container only.

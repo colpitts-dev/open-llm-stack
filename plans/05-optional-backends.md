@@ -132,7 +132,8 @@ make reload && sleep 20
 set -a; . ./.env; set +a
 curl -sS http://127.0.0.1:3000/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
   -d '{"model":"qwen3-0.6b-test","messages":[{"role":"user","content":"Reply with exactly: OK"}],"max_tokens":256}' | jq -r '.choices[0].message.content // .error'
-mv proxy/config.yaml.bak proxy/config.yaml; mv .env.bak .env; make down && make up   # restore
+COMPOSE_PROFILES=litellm,ollama docker compose down     # stop the backend BEFORE restoring .env, or it is orphaned
+mv proxy/config.yaml.bak proxy/config.yaml; mv .env.bak .env; make up   # restore
 
 # --- llamacpp profile (only if a GGUF is obtainable) ---
 mkdir -p models && curl -fL -o models/stories260K.gguf https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf || echo "no GGUF available -- flag G10-llamacpp not run"
@@ -140,7 +141,8 @@ cp .env .env.bak
 sed -i 's|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=litellm,llamacpp|; s|^LLM_BASE_URL=.*|LLM_BASE_URL=http://llamacpp:8080|; s|^# LLAMACPP_MODEL_FILE=.*|LLAMACPP_MODEL_FILE=stories260K.gguf|' .env
 make up                                   # preflight: OK backend reachable at http://llamacpp:8080/v1/models
 docker compose exec -T litellm python3 -c "import urllib.request,json;b=json.dumps({'messages':[{'role':'user','content':'Once upon a time'}],'max_tokens':16}).encode();r=urllib.request.Request('http://llamacpp:8080/v1/chat/completions',data=b,headers={'Content-Type':'application/json'});print(json.load(urllib.request.urlopen(r,timeout=120))['choices'][0]['message']['content'][:80])"
-mv .env.bak .env; rm -f models/stories260K.gguf; make down && make up
+COMPOSE_PROFILES=litellm,llamacpp docker compose down   # same: profile-scoped down first
+mv .env.bak .env; rm -f models/stories260K.gguf; make up
 ```
 
 ## 6. Integration notes
@@ -149,4 +151,112 @@ mv .env.bak .env; rm -f models/stories260K.gguf; make down && make up
 - Compose profiles are selective: with `ollama` on and the operator's own backend also present, LiteLLM uses whichever `LLM_BASE_URL` names; the other is untouched.
 - The `deploy.resources` GPU block is commented, not profile-gated, because hosts without `nvidia-container-toolkit` fail hard on it.
 
-## 7. Execution report (fill in)
+## 7. Execution report
+
+**Executed 2026-09-12** on the reference host (CPU only; host Ollama at 0.0.0.0:11434 outside the project). Stack state before: 8 default containers healthy (`COMPOSE_PROFILES=litellm,openwebui,buzz,gitea`, `LLM_BASE_URL=http://host.docker.internal:11434`). Baseline md5: `.env` `02b64f71d1a3a7341f27366bb5a3061b`, `proxy/config.yaml` `0b0931a54b8b551584f43cea15bb29e4`. Neither image was present on the host; both were pulled (`docker pull` of `ollama/ollama:0.34.0` + `ghcr.io/ggml-org/llama.cpp:server-b10920`: 6m08s total, ahead of `make up` -- Compose would otherwise have pulled them there).
+
+### G0
+
+```
+$ for p in ollama llamacpp litellm,ollama litellm,llamacpp; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: $p"; done
+G0 ok: ollama
+G0 ok: llamacpp
+G0 ok: litellm,ollama
+G0 ok: litellm,llamacpp
+```
+
+### G10 -- ollama profile: PASS
+
+```
+$ cp .env .env.bak && sed -i '...' .env && grep -nE '^(COMPOSE_PROFILES|LLM_BASE_URL)=' .env
+2:COMPOSE_PROFILES=litellm,ollama
+11:LLM_BASE_URL=http://ollama:11434
+$ make up                                        # 30.7 s
+ Volume open-llm-stack_ollama-data Created
+ Container open-llm-stack-ollama-1 Started
+ Container open-llm-stack-litellm-1 Recreated ... Healthy
+./scripts/preflight.sh
+OK  backend reachable at http://ollama:11434/v1/models
+
+$ docker compose exec ollama ollama pull qwen3:0.6b     # 45.5 s; registry.ollama.ai reachable from the container
+pulling 7f4030143c1c: 100% 522 MB/522 MB   11 MB/s
+verifying sha256 digest
+writing manifest
+success
+$ docker compose exec ollama ollama list
+NAME          ID              SIZE      MODIFIED
+qwen3:0.6b    7df6b6e09427    522 MB    Less than a second ago
+
+$ docker compose ps ollama --format '{{.Name}} {{.Ports}}'
+open-llm-stack-ollama-1 11434/tcp                        # container port only, no host mapping
+
+$ cp proxy/config.yaml proxy/config.yaml.bak && python3 - <<'PY' ... PY   # inserts qwen3-0.6b-test at top of model_list
+$ make reload && sleep 20
+$ curl -sS http://127.0.0.1:3000/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" ... -d '{"model":"qwen3-0.6b-test",...}' | jq -r '.choices[0].message.content // .error'
+OK                                                        # 3.6 s, CPU inference
+```
+
+Restore: `mv proxy/config.yaml.bak proxy/config.yaml; mv .env.bak .env; make down && make up` (43.5 s). Preflight after restore: `OK  backend reachable at http://host.docker.internal:11434/v1/models`.
+
+### G10 -- llamacpp profile: PASS
+
+```
+$ mkdir -p models && curl -fL -o models/stories260K.gguf https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+100 1157k  100 1157k    0     0  1477k      0 --:--:-- --:--:-- --:--:-- 2352k    # 1,185,376 bytes, magic "GGUF"
+$ cp .env .env.bak && sed -i '...' .env && grep -nE '^(COMPOSE_PROFILES|LLM_BASE_URL|LLAMACPP_MODEL_FILE)=' .env
+2:COMPOSE_PROFILES=litellm,llamacpp
+11:LLM_BASE_URL=http://llamacpp:8080
+73:LLAMACPP_MODEL_FILE=stories260K.gguf
+$ make up                                        # 33.8 s
+ Container open-llm-stack-llamacpp-1 Started ... Healthy     # the image ships its own HEALTHCHECK
+./scripts/preflight.sh
+OK  backend reachable at http://llamacpp:8080/v1/models
+$ docker compose ps llamacpp --format '{{.Name}} {{.Status}} {{.Ports}}'
+open-llm-stack-llamacpp-1 Up 30 seconds (healthy)         # no host port
+$ docker compose logs llamacpp | grep -E 'model loaded|listening'
+llamacpp-1  | 0.00.018.641 I srv  llama_server: model loaded
+llamacpp-1  | 0.00.018.645 I srv  llama_server: listening on http://0.0.0.0:8080
+
+$ docker compose exec -T litellm python3 -c "...urlopen('http://llamacpp:8080/v1/chat/completions')...['choices'][0]['message']['content'][:80]"
+"Sext," Joscries.                                        # 0.14 s; nonsense is expected from a 260K-param toy model
+```
+
+Restore: `COMPOSE_PROFILES=litellm,llamacpp docker compose down   # same: profile-scoped down first
+mv .env.bak .env; rm -f models/stories260K.gguf; make up` (43.6 s), then `rmdir models`.
+
+### Restore verification
+
+```
+$ md5sum .env proxy/config.yaml                  # identical before, after ollama phase, after llamacpp phase
+02b64f71d1a3a7341f27366bb5a3061b  .env
+0b0931a54b8b551584f43cea15bb29e4  proxy/config.yaml
+$ grep -nE '^(COMPOSE_PROFILES|LLM_BASE_URL)=|LLAMACPP_MODEL_FILE' .env
+2:COMPOSE_PROFILES=litellm,openwebui,buzz,gitea
+11:LLM_BASE_URL=http://host.docker.internal:11434
+73:# LLAMACPP_MODEL_FILE=your-model.gguf   # file inside ./models/, llamacpp profile only
+$ docker compose ps    -> 8 containers, all (healthy): buzz, buzz-db, buzz-minio, buzz-redis, gitea, litellm, litellm-db, open-webui
+$ docker ps -a --filter name=open-llm-stack | grep -E 'ollama|llamacpp'   -> none
+$ ./scripts/preflight.sh
+OK  backend reachable at http://host.docker.internal:11434/v1/models
+$ ls .env.bak proxy/config.yaml.bak models   -> none exist
+$ make test                                      # 44 s: litellm, open-webui, buzz, gitea all pass, "smoke test finished"
+```
+
+The `open-llm-stack_ollama-data` volume (522 MB, holds `qwen3:0.6b`) is left in place: `down` without `-v` keeps declared volumes, and the plan does not ask to remove it. `docker volume rm open-llm-stack_ollama-data` if unwanted.
+
+### Timings
+
+| step | time |
+|---|---|
+| pull both images | 6m08s |
+| ollama: `make up` | 30.7 s |
+| ollama: `ollama pull qwen3:0.6b` (522 MB) | 45.5 s |
+| ollama: completion via LiteLLM (CPU) | 3.6 s |
+| llamacpp: GGUF download (1.2 MB) | ~1 s |
+| llamacpp: `make up` | 33.8 s |
+| llamacpp: completion | 0.14 s |
+| each restore `make down && make up` | ~43.5 s |
+
+### Fix applied to the validation procedure (not to any project file)
+
+The restore line as written (`mv .env.bak .env; make down && make up`) leaves the optional-backend container **running and orphaned**: once `.env` is back to the four default profiles, `docker compose down` no longer manages `ollama`/`llamacpp`, so it removes the eight default containers and prints `Network open-llm-stack Resource is still in use`. Observed after the ollama phase: `open-llm-stack-ollama-1 Up 2 minutes` still listed by `docker compose ps` next to the 8 restored containers. Cleaned up with `COMPOSE_PROFILES=ollama docker compose down` (removes only that container; the network warning is harmless). For the llamacpp phase the same profile-scoped `down` was run *before* restoring `.env`, after which `make down` removed the network cleanly. Anyone repeating §5 should run `COMPOSE_PROFILES=<backend> docker compose down` before `mv .env.bak .env`. No image tag, compose file, script, or env name was changed.
