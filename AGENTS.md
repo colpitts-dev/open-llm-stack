@@ -1,6 +1,6 @@
 # Open LLM Stack — Rules for coding agents
 
-Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends and a Buzz LLM agent. Binding spec: `docs/spec.md`. Plans: `plans/01…07`. **Status:** plans 01–06 (LiteLLM, Open WebUI, Buzz relay, Gitea, optional backends, Buzz agent) executed and validated 2026-09-12; plan 07 pending.
+Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends and a Buzz LLM agent. Binding spec: `docs/spec.md`. Plans: `plans/01…07`. **Status:** all seven plans executed and validated on 2026-09-12 (01 LiteLLM, 02 Open WebUI, 03 Buzz relay, 04 Gitea, 05 optional backends, 06 Buzz agent, 07 assembly + full gate suite + README); each plan ends with its execution report. `README.md` is the operator document.
 
 ## Principles
 
@@ -32,13 +32,15 @@ proxy/config.yaml(.example)   scripts/{init,check-ports,preflight,smoke-test,boo
 ## Development commands
 
 ```bash
-make init             # .env + secrets + proxy/config.yaml (idempotent)
-make up               # check ports, compose up --wait, preflight the LLM backend
-make test             # smoke-test every layer in COMPOSE_PROFILES
-make reload           # after editing proxy/config.yaml
-make gitea-bootstrap  # admin user + API token
-make logs S=<service> | make ps | make down
-./scripts/buzz-smoke.sh   # mention the bundled agent, expect a reply (profile buzz-agent)
+make init             # ./scripts/init.sh: .env + secrets + proxy/config.yaml (idempotent)
+make up               # ./scripts/check-ports.sh; docker compose up -d --wait; ./scripts/preflight.sh
+make down             # docker compose down (volumes kept)
+make ps               # docker compose ps
+make logs S=<service> # docker compose logs -f <service>
+make test             # ./scripts/smoke-test.sh: one section per profile in COMPOSE_PROFILES
+make reload           # docker compose restart litellm, after editing proxy/config.yaml
+make gitea-bootstrap  # ./scripts/bootstrap-gitea.sh: admin user + API token into .env
+./scripts/buzz-smoke.sh   # mention the bundled agent, expect a reply (profile buzz-agent; make test runs it too)
 ```
 
 ## Executing a plan

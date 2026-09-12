@@ -94,7 +94,7 @@ test_gitea() {
   curl -fsS -X DELETE -H "$auth" "$base/api/v1/repos/${GITEA_ADMIN_USER}/${repo}" && echo "deleted $repo"
 }
 
-# --- dispatcher (later plans add: openwebui, buzz, gitea) ---
+# --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
 has_profile buzz && test_buzz

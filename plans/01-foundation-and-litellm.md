@@ -263,7 +263,7 @@ model_list:
   #     api_key: sk-unused                     # the client requires *a* key; the server ignores it
   #   model_info:
   #     mode: chat
-  #     max_input_tokens: 24576               # 32768 - 4096 - 8192 -- match your -c
+  #     max_input_tokens: 20480               # 32768 - 4096 - 8192 -- match your -c
   #     max_output_tokens: 4096
   #     execution_locus: local
 
