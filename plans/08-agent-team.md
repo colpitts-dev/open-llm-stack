@@ -68,8 +68,12 @@ Append this block to `.env.example` and to `docs/spec.md`'s §3 fenced block (af
 
 ```bash
 # --- Agent team (profile: team) — Dinesh (builder), Gilfoyle (reviewer), Jared (coordinator), Erlich (assistant)
-TEAM_MODEL=ornith-max          # one resident model for the whole team; must exist in proxy/config.yaml
-TEAM_MAX_CONTEXT_TOKENS=237568 # = that model's max_input_tokens
+# One model for the whole team; must be a model_name in proxy/config.yaml. Switch with `make team-model M=qwen3.8-max`.
+# Measured 2026-09-13: ornith-max, qwen3.8-max and laguna-max publish multi-step results; qwen3.6-max does not.
+TEAM_MODEL=ornith-max
+# Leave blank: each agent reads max_input_tokens/max_output_tokens for TEAM_MODEL from LiteLLM's registry at startup.
+# Set only to force a smaller window than the registry declares.
+TEAM_MAX_CONTEXT_TOKENS=
 # Comma-separated 64-hex pubkeys of the humans the agents obey (Richard). Find yours in the Buzz app profile,
 # or from a message you posted: `buzz messages get --channel <uuid>` shows `pubkey`. First entry is the agents' owner.
 TEAM_ALLOWLIST=
@@ -161,8 +165,7 @@ x-team-agent: &team-agent
     OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY}
     OPENAI_COMPAT_MODEL: ${TEAM_MODEL:-ornith-max}
     OPENAI_COMPAT_API: chat
-    BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${TEAM_MAX_CONTEXT_TOKENS:-237568}
-    BUZZ_AGENT_MAX_OUTPUT_TOKENS: "16384"
+    BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${TEAM_MAX_CONTEXT_TOKENS:-}   # blank = entrypoint fills from the registry
     BUZZ_AGENT_REQUIRE_REPLY: "1"      # reply guard: rerolls a turn that ends without a publish (advisory, max 2)
     GITEA_URL: ${GITEA_PUBLIC_URL:-http://127.0.0.1:3003}
     GITEA_OWNER: ${GITEA_ADMIN_USER:-stackadmin}
@@ -291,12 +294,23 @@ fi
 # Prompt = team norms + persona (base prompt is prepended by the harness itself)
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/${TEAM_ROLE}.md"; } > "$HOME/.prompt.md"
 
+# Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
+# Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).
+info=$(curl -fsS -H "Authorization: Bearer $OPENAI_COMPAT_API_KEY" "$OPENAI_COMPAT_BASE_URL/model/info" | tr -d '\n ') || { echo "cannot read LiteLLM registry at $OPENAI_COMPAT_BASE_URL" >&2; exit 1; }
+blk=$(sed "s/.*\"model_name\":\"$OPENAI_COMPAT_MODEL\"//" <<<"$info")
+[ "$blk" != "$info" ] || { echo "model '$OPENAI_COMPAT_MODEL' is not in proxy/config.yaml -- fix TEAM_MODEL" >&2; exit 1; }
+reg_in=$(grep -o '"max_input_tokens":[0-9]*' <<<"$blk" | head -1 | grep -o '[0-9]*$')
+reg_out=$(grep -o '"max_output_tokens":[0-9]*' <<<"$blk" | head -1 | grep -o '[0-9]*$')
+export BUZZ_AGENT_MAX_CONTEXT_TOKENS="${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-${reg_in:-32768}}"
+export BUZZ_AGENT_MAX_OUTPUT_TOKENS="${reg_out:-4096}"
+echo "model=$OPENAI_COMPAT_MODEL context=$BUZZ_AGENT_MAX_CONTEXT_TOKENS output=$BUZZ_AGENT_MAX_OUTPUT_TOKENS"
+
 buzz users set-profile --name "$BUZZ_ACP_DISPLAY_NAME" --about "open-llm-stack team agent (${TEAM_ROLE}), model ${OPENAI_COMPAT_MODEL}" >/dev/null 2>&1 \
   && echo "profile name set: $BUZZ_ACP_DISPLAY_NAME" || echo "could not set profile name (will retry on next restart)"
 exec /usr/local/bin/sprig-entrypoint
 ```
 
-`chmod +x`. Acceptance: `docker compose logs dinesh` shows `profile name set: Dinesh`, `connected to relay`, `presence set to online`; `docker compose exec dinesh cat /home/agent/.git-credentials | sed 's/:[^:@]*@/:<t>@/'` shows the Gitea host; `docker compose exec dinesh git config --global credential.helper` → `store`.
+`chmod +x`. Acceptance: `docker compose logs dinesh` shows `model=ornith-max context=237568 output=16384`, `profile name set: Dinesh`, `connected to relay`, `presence set to online`; `docker compose exec dinesh cat /home/agent/.git-credentials | sed 's/:[^:@]*@/:<t>@/'` shows the Gitea host; `docker compose exec dinesh git config --global credential.helper` → `store`.
 
 ### Task 6 — persona files (`agents/`)
 
@@ -459,6 +473,13 @@ team-bootstrap:  ## Gitea users/tokens for the agents, runner token, fixture rep
 
 team-smoke:      ## submit a job thread; expect a green PR and a review
 	./scripts/team-smoke.sh
+
+team-model:      ## switch every team agent's model: make team-model M=qwen3.8-max
+	@test -n "$(M)" || { echo "usage: make team-model M=<model_name from proxy/config.yaml>"; exit 1; }
+	@set -a; . ./.env; set +a; curl -fsS -H "Authorization: Bearer $$LITELLM_MASTER_KEY" "$${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1/models" | jq -e --arg m "$(M)" '.data[] | select(.id==$$m)' >/dev/null || { echo "$(M) is not registered in proxy/config.yaml"; exit 1; }
+	sed -i 's|^TEAM_MODEL=.*|TEAM_MODEL=$(M)|' .env
+	docker compose up -d dinesh gilfoyle jared erlich
+	@echo "team now on $(M); each agent re-reads its context window from the registry on start"
 ```
 
 `scripts/smoke-test.sh`: add before the dispatcher
@@ -514,8 +535,8 @@ echo "TEAM SMOKE PASS: PR #$pr, CI success, review $rv. Merge it in Gitea to clo
 
 ### Task 9 — docs
 
-- `docs/spec.md`: §1 add rows for `gitea-runner` (`docker.gitea.com/act_runner:3.4.2`, profile `gitea-runner`, no port) and the four team agents (profile `team`, sprig image, no port); §3 the vars from Task 1; new **§5.8 Agent team + Gitea Actions** listing the verified facts from §3 of this plan (runner networking, status context names, self-approval rule, sprig has no jq/python, `${{ github.token }}` clone); §7 gates G11 runner registered + fixture CI green, G12 team smoke, G13 GPU stays on GPU under team load.
-- `README.md`: section "The agent team" — who the agents are, how to give them your pubkey (`TEAM_ALLOWLIST`), `make team-bootstrap`, enabling `gitea-runner,team` profiles, how to create a project channel in the app and add Dinesh + Gilfoyle by pubkey, how a job looks (thread, PR link, Gilfoyle review, merge in Gitea), Jared's `#triage` channel, Erlich in `#general`, the heartbeat setting, and the honest limits (advisory reply guard, one model, busy channels).
+- `docs/spec.md`: §1 add rows for `gitea-runner` (`docker.gitea.com/act_runner:3.4.2`, profile `gitea-runner`, no port) and the four team agents (profile `team`, sprig image, no port); §3 the vars from Task 1; new **§5.8 Agent team + Gitea Actions** listing the verified facts from §3 of this plan (runner networking, status context names, self-approval rule, sprig has no jq/python, `${{ github.token }}` clone); §7 gates G11 runner registered + fixture CI green, G12 team smoke, G13 GPU stays on GPU under team load, G14 one-variable model switch.
+- `README.md`: section "The agent team" — who the agents are, how to give them your pubkey (`TEAM_ALLOWLIST`), `make team-bootstrap`, enabling `gitea-runner,team` profiles, how to create a project channel in the app and add Dinesh + Gilfoyle by pubkey, how a job looks (thread, PR link, Gilfoyle review, merge in Gitea), Jared's `#triage` channel, Erlich in `#general`, the heartbeat setting, switching models with `make team-model M=qwen3.8-max` (one variable, caps come from the registry), and the honest limits (advisory reply guard, one model, busy channels).
 - `AGENTS.md`: status line; add `make team-bootstrap` / `make team-smoke` to the commands block.
 
 ---
@@ -553,6 +574,14 @@ make team-smoke
 # G13 -- GPU stayed on GPU during the run
 docker exec ollama ollama ps        # ornith-max ... 100% GPU
 
+# G14 -- one-variable model switch
+make team-model M=qwen3.8-max
+docker compose logs --since 2m dinesh | grep -E 'model=qwen3.8-max context=106496 output=16384'
+docker compose exec -T dinesh sh -c 'echo $OPENAI_COMPAT_MODEL'   # qwen3.8-max
+# mention Dinesh once from the smoke identity (any question) and confirm a reply lands, then:
+make team-model M=nope-model; echo "exit=$? (expect 1, not registered)"
+make team-model M=ornith-max
+
 # Erlich + Jared
 # Erlich: in the app, add Erlich to #general by pubkey (TEAM_ERLICH_PUBKEY) and ask "@Erlich summarise this channel" -> reply lands.
 # Jared heartbeat: temporarily TEAM_HEARTBEAT_SECONDS=60, `docker compose up -d jared`, create a channel named `triage` in the app and
@@ -568,6 +597,6 @@ If `team-smoke` fails at "no PR": read `docker compose logs dinesh` for the turn
 ## 7. Execution report (fill in)
 
 - Findings and fixes:
-- Gate output (G0, G11, G12, G13, G8):
+- Gate output (G0, G11, G12, G13, G14, G8):
 - Timings (PR opened after, CI duration, review after):
 - Not run and why:
