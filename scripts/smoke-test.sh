@@ -106,6 +106,18 @@ test_gitea_runner() {
   curl -fsS -H "$auth" "$base/repos/${TEAM_GITEA_ORG:-piedpiper}/demo-calc/actions/runs" | jq -r '.workflow_runs[0] | "run \(.status)/\(.conclusion // "-") \(.head_branch)"'
 }
 
+test_team_factory() {
+  local base="${GITEA_PUBLIC_URL:-http://${BIND_HOST}:${GITEA_PORT:-3003}}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" org="${TEAM_GITEA_ORG:-piedpiper}"
+  local name="factory-$(date +%s | tail -c 6)"
+  echo "--- team: repository factory (new-repo inside dinesh, no LLM)"
+  docker compose exec -T dinesh /opt/team/agents/bin/new-repo "$name" | head -1
+  curl -fsS -o /dev/null -H "$auth" "$base/repos/$org/$name/contents/.gitea/workflows/ci.yaml" && echo "workflow present"
+  curl -fsS -H "$auth" "$base/repos/$org/$name/branch_protections/main" | jq -r '"protection: contexts=\(.status_check_contexts|join(",")) approvals=\(.required_approvals) merge=\(.merge_whitelist_usernames|join(",")) admin_override_blocked=\(.block_admin_merge_override)"'
+  local collab; collab=$(curl -fsS -H "$auth" "$base/repos/$org/$name/collaborators" | jq -r 'length')
+  [ "$collab" = 0 ] && echo "collaborators: none (creator demoted)" || fail "factory left $collab collaborator(s) on $name"
+  curl -fsS -o /dev/null -X DELETE -H "$auth" "$base/repos/$org/$name" && echo "deleted $name"
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
@@ -114,4 +126,5 @@ has_profile buzz && test_buzz
 has_profile buzz-agent && ./scripts/buzz-smoke.sh
 has_profile gitea-runner && test_gitea_runner
 has_profile team && ./scripts/team-smoke.sh
+has_profile team && test_team_factory
 echo "smoke test finished"

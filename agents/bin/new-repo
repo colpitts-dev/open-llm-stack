@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Factory: create a governed repository in the team org from its python-template, then drop the creator's admin rights.
+# Runs inside an agent container: token from ~/.gitea.env, CA from ~/.curlrc (plan 09), no jq/python in this image.
+set -euo pipefail
+name="${1:-}"
+[[ "$name" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || { echo "usage: new-repo <name>   (lowercase letters, digits, dashes)" >&2; exit 2; }
+. "$HOME/.gitea.env"
+: "${GITEA_URL:?}" "${GITEA_OWNER:?}" "${GITEA_USER:?}" "${GITEA_TOKEN:?}"
+B="$GITEA_URL/api/v1"; H=(-H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json")
+code() { curl -sS -o /dev/null -w '%{http_code}' "${H[@]}" "$@"; }
+
+[ "$(code "$B/repos/$GITEA_OWNER/$name")" = 404 ] || { echo "$GITEA_OWNER/$name already exists: $GITEA_URL/$GITEA_OWNER/$name" >&2; exit 1; }
+[ "$(code "$B/repos/$GITEA_OWNER/python-template")" = 200 ] || { echo "template $GITEA_OWNER/python-template missing -- ask Richard to run make team-bootstrap" >&2; exit 1; }
+
+# 1. generate: content + labels + the protected main (required CI check, one approval, merge by humans only)
+out=$(curl -sS "${H[@]}" -d "{\"owner\":\"$GITEA_OWNER\",\"name\":\"$name\",\"private\":true,\"default_branch\":\"main\",\"git_content\":true,\"protected_branch\":true,\"labels\":true}" \
+  "$B/repos/$GITEA_OWNER/python-template/generate")
+grep -q '"full_name":"'"$GITEA_OWNER/$name"'"' <<<"$out" || { echo "generate failed: $(sed 's/.*"message":"\([^"]*\)".*/\1/' <<<"$out")" >&2; exit 1; }
+
+# 2. sanity while I am still repo admin (reading the rule needs admin; after step 3 I could not check it)
+[ "$(code "$B/repos/$GITEA_OWNER/$name/branch_protections/main")" = 200 ] || echo "warning: main is NOT protected on $name; tell Richard" >&2
+
+# 3. self-demotion: Gitea made me a repo admin; the team's write access is all I should keep
+rc=$(code -X DELETE "$B/repos/$GITEA_OWNER/$name/collaborators/$GITEA_USER")
+[ "$rc" = 204 ] || echo "warning: could not remove myself as collaborator (HTTP $rc); tell Richard" >&2
+
+echo "created $GITEA_URL/$GITEA_OWNER/$name (private, main protected, you have write via the team)"
+echo "next: git clone $GITEA_URL/$GITEA_OWNER/$name.git REPOS/$name && cd REPOS/$name && sed -i \"s/REPO_NAME/$name/g\" pyproject.toml README.md && git checkout -b agent/<slug>"

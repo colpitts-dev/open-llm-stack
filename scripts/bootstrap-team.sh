@@ -46,17 +46,45 @@ if has_profile gitea-runner && blank GITEA_RUNNER_TOKEN; then
   setenv GITEA_RUNNER_TOKEN "$(docker compose exec -T -u git gitea gitea actions generate-runner-token | tail -1 | tr -d '\r\n')"; echo "GITEA_RUNNER_TOKEN written"
 fi
 
-# 3. organization + `agents` team (write on every repo, may create repos; write is enough for branch protection -- plan 08) + you as owner
+# 3. organization + three role teams. Permissions enforce the roles; personas only describe them.
+#    builders: write code/pulls/issues, may create repos (the factory). reviewers: read code, write pulls (reviews) and issues.
+#    coordinators: write issues (triage), read code/pulls/actions. Nobody is an owner but the humans.
 if [ "$(code -H "$A" "$B/orgs/$ORG")" != 200 ]; then
   api -d "{\"username\":\"$ORG\",\"visibility\":\"private\",\"description\":\"open-llm-stack agent team\"}" "$B/orgs" >/dev/null && echo "created org $ORG"
 else echo "org $ORG exists"; fi
-tid=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="agents") | .id')
-if [ -z "$tid" ]; then
-  tid=$(api -d '{"name":"agents","description":"builder, reviewer, coordinator","permission":"write","can_create_org_repo":true,"includes_all_repositories":true,"units":["repo.code","repo.issues","repo.pulls","repo.releases","repo.actions"]}' "$B/orgs/$ORG/teams" | jq -r .id) && echo "created team $ORG/agents"
-else echo "team $ORG/agents exists"; fi
-for who in dinesh gilfoyle jared; do api -o /dev/null -X PUT "$B/teams/$tid/members/$who" && echo "team member $who"; done
+ensure_team() {   # ensure_team <name> <can_create_org_repo> <units_map json> <member>...
+  local name="$1" create="$2" units="$3"; shift 3
+  local tid; tid=$(api "$B/orgs/$ORG/teams" | jq -r --arg n "$name" '.[] | select(.name==$n) | .id')
+  if [ -z "$tid" ]; then
+    tid=$(api -d "{\"name\":\"$name\",\"permission\":\"read\",\"can_create_org_repo\":$create,\"includes_all_repositories\":true,\"units_map\":$units}" "$B/orgs/$ORG/teams" | jq -r .id) && echo "created team $ORG/$name"
+  else echo "team $ORG/$name exists"; fi
+  for who in "$@"; do api -o /dev/null -X PUT "$B/teams/$tid/members/$who" && echo "team $name: member $who"; done
+}
+ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' dinesh
+ensure_team reviewers    false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' gilfoyle
+ensure_team coordinators false '{"repo.code":"read","repo.pulls":"read","repo.issues":"write","repo.actions":"read"}' jared
+old=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="agents") | .id'); [ -n "$old" ] && api -o /dev/null -X DELETE "$B/teams/$old" && echo "removed legacy team $ORG/agents (write+create for everyone)"
 oid=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="Owners") | .id')
 api -o /dev/null -X PUT "$B/teams/$oid/members/$HUMAN" && echo "org owner $HUMAN"
+
+# Template repository: python-template (workflow for THIS mode's runner label + starter files + the protection rule).
+# Agents generate new repos from it (agents/bin/new-repo); `protected_branch:true` copies the rule at birth.
+TPL=python-template
+PROT="{\"branch_name\":\"main\",\"enable_push\":false,\"enable_status_check\":true,\"status_check_contexts\":[\"ci / test (pull_request)\"],\"required_approvals\":1,\"block_on_rejected_reviews\":true,\"block_admin_merge_override\":true,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"]}"
+if [ "$(code -H "$A" "$B/repos/$ORG/$TPL")" != 200 ]; then
+  api -d "{\"name\":\"$TPL\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\",\"template\":true,\"description\":\"template for repositories the agent team creates\"}" "$B/orgs/$ORG/repos" >/dev/null && echo "created $ORG/$TPL"
+fi
+tmp=$(mktemp -d); git -c http.extraHeader="$A" clone -q "$G/$ORG/$TPL.git" "$tmp/t"
+mkdir -p "$tmp/t/.gitea/workflows" "$tmp/t/tests"
+cp agents/template/pyproject.toml agents/template/README.md "$tmp/t/"; cp agents/template/tests/test_smoke.py "$tmp/t/tests/"
+sed "s/^    runs-on: .*/    runs-on: $LABEL/" agents/ci-python.yaml > "$tmp/t/.gitea/workflows/ci.yaml"
+if [ -n "$(git -C "$tmp/t" status --porcelain)" ]; then
+  # a protected main rejects pushes for everyone; drop the rule for the update, the loop below restores it
+  curl -fsS -o /dev/null -X DELETE -H "$A" "$B/repos/$ORG/$TPL/branch_protections/main" 2>/dev/null || true
+  (cd "$tmp/t" && git add -A && git -c user.name="$ADMIN" -c user.email="$ADMIN@localhost" commit -qm "template: sync from agents/ (runs-on: $LABEL)" && git -c http.extraHeader="$A" push -q origin main) && echo "$ORG/$TPL updated"
+else echo "$ORG/$TPL up to date"; fi
+rm -rf "$tmp"
+api -o /dev/null -X PATCH -d '{"template":true}' "$B/repos/$ORG/$TPL"
 
 # 4. fixture repository demo-calc (Python + pytest) with the CI workflow for THIS mode's runner label
 REPO=demo-calc
@@ -76,17 +104,18 @@ if [ "$(code -H "$A" "$B/repos/$ORG/$REPO")" != 200 ]; then
     rm -rf "$tmp"; echo "created $ORG/$REPO with CI workflow (runs-on: $LABEL)"
   fi
 else echo "$ORG/$REPO exists"; fi
-# Branch protection on EVERY org repo (the fixture and whatever the agents created since): required check, one approval,
-# merge by the admin and the human only. Dinesh's persona applies it to repos he creates, but a model can skip a step;
-# re-running this bootstrap is the deterministic backstop.
-PROT="{\"branch_name\":\"main\",\"enable_push\":false,\"enable_status_check\":true,\"status_check_contexts\":[\"ci / test (pull_request)\"],\"required_approvals\":1,\"block_on_rejected_reviews\":true,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"]}"
+# Reconcile every org repo (template, fixture, agent-created): protection present and complete; no agent left as a
+# collaborator (Gitea makes the creator a repo admin; the factory demotes itself, this is the backstop).
 want=$(printf '%s\n' "$ADMIN" "$HUMAN" | sort -u | paste -sd,)
 for r in $(api "$B/orgs/$ORG/repos?limit=50" | jq -r '.[].name'); do
   if [ "$(code -H "$A" "$B/repos/$ORG/$r/branch_protections/main")" != 200 ]; then
     api -o /dev/null -d "$PROT" "$B/repos/$ORG/$r/branch_protections" && echo "$r: branch protection on main: CI check + 1 approval, merge by $want only"
-  elif [ "$(api "$B/repos/$ORG/$r/branch_protections/main" | jq -r '[.enable_merge_whitelist, (.merge_whitelist_usernames|sort|unique|join(","))] | join(" ")')" != "true $want" ]; then
-    api -o /dev/null -X PATCH -d "{\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"]}" "$B/repos/$ORG/$r/branch_protections/main" && echo "$r: merge restricted to $want"
+  elif [ "$(api "$B/repos/$ORG/$r/branch_protections/main" | jq -r '[.enable_merge_whitelist, .block_admin_merge_override, (.merge_whitelist_usernames|sort|unique|join(","))] | join(" ")')" != "true true $want" ]; then
+    api -o /dev/null -X PATCH -d "{\"enable_merge_whitelist\":true,\"block_admin_merge_override\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"]}" "$B/repos/$ORG/$r/branch_protections/main" && echo "$r: protection repaired (merge by $want, admins cannot override)"
   else echo "$r: branch protection on main exists"; fi
+  for c in $(api "$B/repos/$ORG/$r/collaborators" | jq -r '.[] | select(.login=="dinesh" or .login=="gilfoyle" or .login=="jared") | .login'); do
+    api -o /dev/null -X DELETE "$B/repos/$ORG/$r/collaborators/$c" && echo "$r: removed collaborator $c (team write only)"
+  done
 done
 # 5. a runner that serves TEAM_CI_LABEL must exist, or every PR waits forever
 if ! api "$B/admin/actions/runners" | jq -e --arg l "$LABEL" '.runners[]? | select(.status=="online" and any(.labels[]?.name; .==$l))' >/dev/null; then
