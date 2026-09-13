@@ -123,11 +123,12 @@ BUZZ_AGENT_PRIVATE_KEY=
 # make init: matching public key (needed to add the agent to channels)
 BUZZ_AGENT_PUBKEY=
 BUZZ_AGENT_NAME=stack-agent
-BUZZ_AGENT_MODEL=qwen3.6-max   # a model_name from proxy/config.yaml
+BUZZ_AGENT_MODEL=ornith-max    # a model_name from proxy/config.yaml. Verified 2026-09-12: ornith-max, laguna-max and
+                               # qwen3.8-max publish their results; qwen3.6-max tends to end long turns in discarded text.
 BUZZ_AGENT_MAX_CONTEXT_TOKENS=237568   # keep equal to that model's max_input_tokens in proxy/config.yaml
 # Agent instructions appended to the harness base prompt. Verified 2026-09-12: without an explicit
 # publish rule, local models answer in text the harness never posts (the reply shows only in the app's activity log).
-BUZZ_AGENT_INSTRUCTIONS='Your text output is NOT delivered to anyone; humans only see messages you publish. To answer, you MUST run: buzz messages send --channel <channel-uuid from the context block> --content "<your answer>". Do this for every question, then end your turn.'
+BUZZ_AGENT_INSTRUCTIONS='Your text output is NOT delivered to anyone; humans only see messages you publish with the buzz CLI. For every request you MUST end by running: buzz messages send --channel <channel-uuid from the context block> --content "<your answer or a summary of what you did>". If you created or changed files, first run: buzz upload file --file <path> and include the returned URL in that message. Never end a turn without publishing.'
 
 # --- Gitea (profile: gitea) -----------------------------------------------------------------
 GITEA_PORT=3003

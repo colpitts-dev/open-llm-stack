@@ -272,6 +272,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: ${BUZZ_AGENT_NAME:-stack-agent}
       # Without this, local models often answer in text and end the turn; the harness never publishes text.
       BUZZ_ACP_SYSTEM_PROMPT: ${BUZZ_AGENT_INSTRUCTIONS:?run make init}
+      RUST_LOG: info                    # shows tool calls and the model's streamed text in docker compose logs
       # harness: run buzz-agent (no Goose in this image), give it the dev-mcp tools, answer anyone (open relay)
       BUZZ_ACP_AGENT_COMMAND: buzz-agent
       BUZZ_ACP_AGENT_ARGS: ""
@@ -281,7 +282,7 @@ services:
       BUZZ_AGENT_PROVIDER: openai
       OPENAI_COMPAT_BASE_URL: ${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1
       OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY:?run make init}
-      OPENAI_COMPAT_MODEL: ${BUZZ_AGENT_MODEL:-qwen3.6-max}
+      OPENAI_COMPAT_MODEL: ${BUZZ_AGENT_MODEL:-ornith-max}
       OPENAI_COMPAT_API: chat
       BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-237568}   # = that model's max_input_tokens in proxy/config.yaml
       BUZZ_AGENT_MAX_OUTPUT_TOKENS: "16384"                                      # = max_output_tokens
