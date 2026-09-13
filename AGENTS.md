@@ -22,6 +22,10 @@ Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), 
 - MinIO images come from quay.io; Docker Hub denies anonymous pulls of `minio/*`.
 - The reference host runs Ollama at `0.0.0.0:11434` outside this project; ports 3000–3003 must be free before `make up` (`scripts/check-ports.sh`).
 
+## Buzz agent knowledge
+
+Before any Buzz agent work, read `docs/buzz-agents-primer.md` (dense priming doc) — or the graph form in `.serena/memories/buzz/*` via Serena (`mem:core` is the root). It records how agents publish, the reply guard, desktop-app config precedence, relay-git vs Gitea, and the measured model behaviour.
+
 ## Layout
 
 ```
