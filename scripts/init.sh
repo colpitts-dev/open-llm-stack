@@ -34,4 +34,14 @@ if blank BUZZ_AGENT_PRIVATE_KEY; then
   set_if_blank BUZZ_AGENT_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
 fi
 
+for who in DINESH GILFOYLE JARED ERLICH SMOKE; do
+  if blank "TEAM_${who}_PRIVATE_KEY"; then
+    out=$(gen_key)
+    set_if_blank "TEAM_${who}_PRIVATE_KEY" "$(awk '/Secret key:/{print $3}' <<<"$out")"
+    set_if_blank "TEAM_${who}_PUBKEY" "$(awk '/Public key:/{print $3}' <<<"$out")"
+  fi
+done
+set_if_blank TEAM_GITEA_PASSWORD "$(hex 12)"
+set_if_blank TEAM_HUMAN_PASSWORD "$(hex 12)"
+
 echo "init complete. Next: check LLM_BASE_URL in .env and the models in proxy/config.yaml, then: make up"

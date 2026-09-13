@@ -51,8 +51,8 @@ Richard (the operator) is on every allowlist, starts jobs by mentioning Dinesh i
 - `docker.gitea.com/act_runner:3.4.2` (newest semver on Gitea's registry; NOT the stale `gitea/act_runner` on Docker Hub). Entrypoint `/sbin/tini -- run.sh`; binary is `gitea-runner` (v3.4.2); `run.sh` honours `CONFIG_FILE`, `GITEA_INSTANCE_URL`, `GITEA_RUNNER_REGISTRATION_TOKEN`(`_FILE`), `GITEA_RUNNER_NAME`, `GITEA_RUNNER_LABELS`, `GITEA_RUNNER_EPHEMERAL`, `GITEA_RUNNER_ONCE`, `GITEA_MAX_REG_ATTEMPTS`. Registration state persists in `/data/.runner`.
 - Job image `python:3.12-alpine` (Docker Hub, verified). It has no git: the workflow's first step is `apk add --no-cache git`.
 - Gitea 1.27.3 here has Actions **enabled by default** (`has_actions: true` on new repos, no `[actions]` section needed). Runner tokens: `docker compose exec -T -u git gitea gitea actions generate-runner-token` (40 chars; the admin API route needs `write:admin`, which our token lacks).
-- **Networking (verified):** runner container and its job containers use `network_mode: host` / `container.network: host`, so `GITEA_INSTANCE_URL=http://127.0.0.1:3003` and the job clones from the loopback `ROOT_URL` with `${{ github.token }}`. Commit status context is `ci / test (push)` on pushes and `ci / test (pull_request)` on PRs; branch protection names the latter.
-- Verified API shapes (swagger on the live instance): `POST /repos/{o}/{r}/pulls` {title, head, base, body}; `POST /repos/{o}/{r}/pulls/{index}/reviews` {event: APPROVE|REQUEST_CHANGES|COMMENT, body, comments[]}; `POST /repos/{o}/{r}/branch_protections` {branch_name, enable_status_check, status_check_contexts[], required_approvals, block_on_rejected_reviews, enable_push}; `GET /repos/{o}/{r}/commits/{ref}/status`; `PUT /repos/{o}/{r}/collaborators/{user}` {permission}. `GET …/pulls/{index}.diff` returns a unified diff.
+- **Networking (verified):** runner container and its job containers use `network_mode: host` / `container.network: host`, so `GITEA_INSTANCE_URL=http://127.0.0.1:3003` and the job clones from the loopback `ROOT_URL` with `${{ github.token }}`. Commit status context is `ci / test (push)` on pushes and `ci / test (pull_request)` on PRs; branch protection names the latter. **Corrected during execution:** on `pull_request` events `GITHUB_REF_NAME` is the PR index, so the workflow fetches `refs/pull/<n>/head` (§7 finding 6).
+- Verified API shapes (swagger on the live instance): `POST /repos/{o}/{r}/pulls` {title, head, base, body}; `POST /repos/{o}/{r}/pulls/{index}/reviews` {event: APPROVED|REQUEST_CHANGES|COMMENT, body, comments[]} (**corrected during execution**: the enum is `APPROVED`, an unknown value is stored as a PENDING draft; submit a draft with `POST …/reviews/{id}`, see §7 finding 7); `POST /repos/{o}/{r}/branch_protections` {branch_name, enable_status_check, status_check_contexts[], required_approvals, block_on_rejected_reviews, enable_push}; `GET /repos/{o}/{r}/commits/{ref}/status`; `PUT /repos/{o}/{r}/collaborators/{user}` {permission}. `GET …/pulls/{index}.diff` returns a unified diff.
 - Gitea forbids self-approval: the reviewer must be a different user than the PR author → Dinesh, Gilfoyle and Jared each get their own Gitea account + token (scopes `write:repository,write:issue,read:user`).
 - Sprig image facts: `git 2.49.1`, `curl`, `bash`, `rg`, `tree`; **no `jq`, `python3`, `openssl`**. `git config --global credential.helper store` + `~/.git-credentials` works (verified). Entrypoint `/usr/local/bin/sprig-entrypoint` scopes a nostr credential helper to the relay URL and `exec`s `buzz-acp "$@"`. User `agent` uid 1000, `HOME=/home/agent` = the harness working dir (`REPOS/`, `WORK_LOGS/`, `OUTBOX/` live there).
 - buzz-acp flags used (all in `buzz-acp --help` of the pinned image): `BUZZ_ACP_SYSTEM_PROMPT_FILE`, `BUZZ_ACP_SESSION_POLICY=thread|channel`, `BUZZ_ACP_RESPOND_TO=allowlist`, `BUZZ_ACP_RESPOND_TO_ALLOWLIST`, `BUZZ_ACP_AGENT_OWNER`, `BUZZ_ACP_HEARTBEAT_INTERVAL`, `BUZZ_ACP_HEARTBEAT_PROMPT_FILE`, `BUZZ_ACP_AGENTS`, `BUZZ_ACP_DISPLAY_NAME`. buzz-agent: `BUZZ_AGENT_REQUIRE_REPLY=1` (present in the pinned binary).
@@ -594,9 +594,153 @@ docker compose ps --format '{{.Name}} {{.Ports}}'
 
 If `team-smoke` fails at "no PR": read `docker compose logs dinesh` for the turn shape (spec §5.4 triage order: membership → p-tag → `tool_call` lines → `stop=`). A single silent turn can be re-driven by re-mentioning Dinesh in the same thread once before calling it a failure. If CI fails on the PR: open the run's log via `GET /repos/{o}/{r}/actions/jobs/{id}/logs` and check whether `GITHUB_REF_NAME` resolved to the PR head branch; if it did not, change the clone step to `git fetch origin "+refs/pull/${{ github.event.number }}/head" && git checkout FETCH_HEAD` and record the finding in §7.
 
-## 7. Execution report (fill in)
+## 7. Execution report (executed 2026-09-13, Compose v5.1.3, host Ollama `OLLAMA_NUM_PARALLEL=1`, RTX 5090)
 
-- Findings and fixes:
-- Gate output (G0, G11, G12, G13, G14, G8):
-- Timings (PR opened after, CI duration, review after):
-- Not run and why:
+Every task was applied with the plan's contents, then run against the live stack. The plan as written had **nine defects**; each was found by a failing gate or a live probe, fixed in the file it lives in, and is recorded in `docs/spec.md` §5.8 (gotchas 1–8). Files created: `runner/config.yaml`, `agents/{TEAM,dinesh,gilfoyle,jared,jared-heartbeat,erlich}.md`, `scripts/team-entrypoint.sh`, `scripts/bootstrap-team.sh`, `scripts/team-smoke.sh`. Modified: `docker-compose.yml`, `.env.example`, `.env`, `Makefile`, `scripts/init.sh`, `scripts/smoke-test.sh`, `docs/spec.md`, `README.md`, `AGENTS.md`, `.serena/memories/{core,stack/operations,buzz/team-design}.md`.
+
+### Findings and fixes
+
+1. **Compose interpolates `${VAR:?}` for every service, profile on or off.** With the plan's verbatim compose file, `docker compose config` and even `docker compose exec -T gitea …` failed on the default profiles while the bootstrap-filled tokens were blank (`required variable TEAM_GILFOYLE_GITEA_TOKEN is missing a value`) -- circular, since `make team-bootstrap` mints those tokens through `docker compose exec`. Fix: `${TEAM_ALLOWLIST:-}`, `${TEAM_SMOKE_PUBKEY:-}`, `${GITEA_RUNNER_TOKEN:-}`, `${TEAM_*_GITEA_TOKEN:-}` in the compose file; `scripts/team-entrypoint.sh` exits 1 with a message when the allowlist is blank or a non-Erlich role has no token. The `TEAM_*_PRIVATE_KEY:?` lines stay (init fills them before any compose call).
+2. **`grep -o … | head -1` under `set -o pipefail` in the sprig image dies with SIGPIPE (exit 141).** All four agents crash-looped with empty logs; a `bash -x` trace stopped at `reg_in=`. Timing dependent (Gilfoyle survived once). Fix: parse the registry JSON with bash regex (`[[ $blk =~ \"max_input_tokens\":([0-9]+) ]]`).
+3. **buzz-acp starts `buzz-dev-mcp` with a scrubbed environment** (`/proc/<pid>/environ` inside the container: `HOME` and `PATH` only; `buzz-acp --help` has no passthrough). The personas' `$GITEA_URL`/`$GITEA_OWNER`/`$GITEA_TOKEN` were empty in the shell tool; Dinesh port-scanned the host looking for Gitea. Fix: the entrypoint inlines the non-secret URL and owner into `/home/agent/.prompt.md` with `sed`, writes `/home/agent/.gitea.env` (mode 600) for roles with a token, and `agents/TEAM.md` + every persona API call use `. ~/.gitea.env && curl …`. Git clone/push were unaffected (file-based credential store).
+4. **Sprig has no Python.** Dinesh reported "no Python interpreter on this machine, so I couldn't run pytest". `agents/dinesh.md` step 4 now says CI runs the tests; step 8 tells him to read `GET …/commits/<sha>/status`.
+5. **Agent-to-agent mentions were silently dropped.** With `BUZZ_ACP_RESPOND_TO_ALLOWLIST` = humans only, Dinesh's `@Gilfoyle review please` never started a session on Gilfoyle (verified: no session in his log). The plan's own protocol needs Dinesh→Gilfoyle, Jared→Dinesh, Erlich→Dinesh. Fix: the four `TEAM_*_PUBKEY` values are appended to the allowlist in the `x-team-agent` block (`respond_to=allowlist(6)` in the logs).
+6. **`GITHUB_REF_NAME` is the PR index on `pull_request` events, not the head branch.** First PR's check failed: `fatal: Remote branch 1 not found in upstream origin`. Fix in the fixture workflow written by `scripts/bootstrap-team.sh`: clone, then `git fetch origin "+refs/pull/${PR_NUMBER}/head" && git checkout FETCH_HEAD` when `${{ github.event.number }}` is set, else `git checkout "$GITHUB_REF_NAME"`. Pushed to the live `demo-calc` main (branch protection dropped for the push and recreated by the idempotent bootstrap).
+7. **Gitea review API: the event is `APPROVED`, not `APPROVE`** (swagger `CreatePullReviewOptions.event` enum: `APPROVED|PENDING|COMMENT|REQUEST_CHANGES|REQUEST_REVIEW`). Any other value returns 200 and stores a PENDING draft only the reviewer can see (Gitea log: `Unsupported review webhook type`); Gilfoyle's first "approval" was invisible. The plan's `POST …/reviews/{id}/submit` route does not exist (405): a draft is submitted with `POST …/pulls/{n}/reviews/{id}` `{event, body}` (verified both). Fix: `agents/gilfoyle.md` writes the JSON to a file via quoted heredoc, uses `APPROVED`, checks `"state"` in the response and submits a `PENDING` draft; `scripts/team-smoke.sh` accepts only a non-PENDING review.
+8. **`scripts/team-smoke.sh` computed `n0` and never used it**: run 3 "passed" against a still-open PR from run 2 before the new PR existed. Fix: `n0` = highest existing PR number, only a Dinesh PR numbered above it counts.
+9. **`make team-model` once left the agents on the old model** (containers dated from the previous switch, `.env` and rendered config already on the new model). Not reproduced in two further back-to-back switches with full output (both recreated). Fix anyway: `docker compose up -d --force-recreate …` in the recipe.
+
+Smaller: the `bootstrap-team.sh` existence probes print `curl: (22) … 404` on a first run -- silenced with `2>/dev/null`. `make team-model M=nope-model` makes `make` exit 2 (the recipe exits 1), the plan said 1. Both agents mangled shell quoting (backticks, `--` in text) and self-corrected; `agents/TEAM.md` now tells them to write bodies to files with a quoted heredoc. Do not run `make test` while a team job is in flight: its LiteLLM round-trips and a second team smoke compete for the single GPU slot (a concurrent `make test` was stopped during run 1). `TEAM_ALLOWLIST` was filled with the operator's Buzz desktop pubkey, found as the kind-0 profile named after the git user in the relay database. Also fixed: `.env.example` and spec §3 "Optional extras" comment now list `gitea-runner, team`.
+
+### Gate output
+
+```
+$ for p in gitea-runner team litellm,openwebui,buzz,gitea,gitea-runner,team litellm,…,ollama,llamacpp; do COMPOSE_PROFILES="$p" docker compose config --quiet && echo "G0 ok: $p"; done
+G0 ok: gitea-runner
+G0 ok: team
+G0 ok: litellm,openwebui,buzz,gitea,gitea-runner,team
+G0 ok: litellm,openwebui,buzz,gitea,buzz-agent,gitea-runner,team,ollama,llamacpp
+$ COMPOSE_PROFILES=team docker compose config | grep -E 'RESPOND_TO_ALLOWLIST|REQUIRE_REPLY|SESSION_POLICY|HEARTBEAT' | sort | uniq -c
+      1       BUZZ_ACP_HEARTBEAT_INTERVAL: "1800"
+      1       BUZZ_ACP_HEARTBEAT_PROMPT_FILE: /opt/team/agents/jared-heartbeat.md
+      4       BUZZ_ACP_RESPOND_TO_ALLOWLIST: <operator>,<smoke>,<dinesh>,<gilfoyle>,<jared>,<erlich>
+      2       BUZZ_ACP_SESSION_POLICY: channel
+      2       BUZZ_ACP_SESSION_POLICY: thread
+      4       BUZZ_AGENT_REQUIRE_REPLY: "1"
+
+$ ./scripts/init.sh   # twice
+generated TEAM_DINESH_PRIVATE_KEY … generated TEAM_SMOKE_PUBKEY, generated TEAM_GITEA_PASSWORD; second run: only the final line
+$ grep -cE '^TEAM_[A-Z]+_(PRIVATE_KEY|PUBKEY)=[0-9a-f]{64}$' .env
+10
+
+$ make team-bootstrap   # twice
+created gitea user dinesh / TEAM_DINESH_GITEA_TOKEN written / … / GITEA_RUNNER_TOKEN written / created stackadmin/demo-calc with CI workflow /
+collaborator dinesh|gilfoyle|jared: write / branch protection on main: CI check + 1 approval, no direct push / team bootstrap complete
+second run: gitea user dinesh exists … stackadmin/demo-calc exists … branch protection on main exists / team bootstrap complete
+tokens: 4 × 40 chars
+
+# G11
+$ docker compose logs gitea-runner | grep -E 'registered successfully|declare successfully'
+level=info msg="Runner registered successfully."
+… msg="runner: laurie, with version: v3.4.2, with labels: [python], declare successfully"
+$ make test | sed -n '/gitea-runner/,/^---/p'
+--- gitea-runner: registered + last CI run on demo-calc
+registered
+run completed/success main       # (later runs print `null` for head_branch on pull_request events -- Gitea API quirk)
+
+# agents
+$ for a in dinesh gilfoyle jared erlich; do docker compose logs $a | grep -E 'model=|profile name set|connected to relay|presence set'; done
+model=ornith-max context=237568 output=16384 / profile name set: Dinesh / connected to relay at ws://127.0.0.1:3002 / presence set to online   (×4, names differ)
+$ docker compose exec -T dinesh git config --global credential.helper        → store
+$ docker compose exec -T dinesh sh -c 'head -1 /home/agent/.prompt.md'       → # Pied Piper team norms
+$ docker compose exec -T dinesh sh -c 'ls -l ~/.gitea.env'                   → -rw------- 1 agent agent 133
+
+# G12 (final clean run, run 4; Jared's 60 s heartbeat turn was running concurrently)
+$ make team-smoke
+channel 533b24ad-bd68-4988-bdae-433272b51057
+job posted; waiting for a PR from dinesh (up to 15 min)
+PR #4 opened after ~70s
+CI on PR #4: success
+Gilfoyle review: APPROVED
+TEAM SMOKE PASS: PR #4, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+   (started 12:24:23Z, finished 12:25:59Z = 96 s; the `make test` run below repeated it: PR #5 opened after ~20s, CI success, review APPROVED)
+
+# G13
+$ docker exec ollama ollama ps            # polled every 30 s during every run
+ornith-max:latest  f1456ab2d350  24 GB  100% GPU  262144  …
+
+# G14
+$ make team-model M=qwen3.8-max
+… Container open-llm-stack-{dinesh,gilfoyle,jared,erlich}-1 Recreate/Recreated/Started … team now on qwen3.8-max; …
+$ docker compose logs --since 2m dinesh | grep -E 'model=qwen3.8-max context=106496 output=16384'   → model=qwen3.8-max context=106496 output=16384
+$ docker compose exec -T dinesh sh -c 'echo $OPENAI_COMPAT_MODEL'                                   → qwen3.8-max
+mention from the smoke identity: Dinesh replied after ~20s: "PONG — model: Claude (Anthropic)"     (the local model confabulates its name; read TEAM_MODEL)
+$ make team-model M=nope-model; echo "exit=$?"
+nope-model is not registered in proxy/config.yaml / make: *** [Makefile:37: team-model] Error 1 / exit=2
+$ make team-model M=ornith-max   → … team now on ornith-max; … ; logs: model=ornith-max context=237568 output=16384
+
+# Erlich (channel `general`, added by pubkey, mention "@Erlich summarise this channel in two sentences.")
+Erlich replied after ~10s: This channel's been a mix of casual banter and game-brewing — … a tic-tac-toe job, which landed as a single-file, fully playable HTML5 build …
+
+# Jared (TEAM_HEARTBEAT_SECONDS=60, channel `triage` created and Jared added; restored to 1800 afterwards)
+12:24:05Z INFO buzz_acp: heartbeat_fired agent=0 / created heartbeat session … / turn starting for heartbeat
+12:24:21Z acp::stream: Triage channel is `e4bad260-…`. … 12:24:38Z Only `demo-calc` exists under `stackadmin`. … 12:24:44Z No open PRs and no open issues in `demo-calc`.
+(nothing to report → no post, as the heartbeat prompt says)
+
+# G8
+$ docker compose ps --format '{{.Name}} {{.Ports}}' | grep -E '[0-9]+->'
+open-llm-stack-buzz-1 … 127.0.0.1:3002->3002/tcp / gitea 127.0.0.1:3003->3000/tcp / litellm 127.0.0.1:3000->4000/tcp / open-webui 127.0.0.1:3001->8080/tcp
+(runner and the four agents publish nothing)
+
+# Assembly: full make test with COMPOSE_PROFILES=litellm,openwebui,buzz,gitea,buzz-agent,gitea-runner,team (12:27:13Z → 12:30:50Z)
+litellm: 5 models, 4× chat OK, embeddings 1024, no closed-weight model / open-webui: healthy, 5 models, chat OK / buzz: readiness 200, NIP-11, community host ok, web UI /
+gitea: healthz pass, 1.27.3, token ok, repo create+clone+delete / buzz-agent: agent replied after ~10s: PONG / gitea-runner: registered, run completed/success /
+team: PR #5 opened after ~20s, CI on PR #5: success, Gilfoyle review: APPROVED, TEAM SMOKE PASS / smoke test finished
+```
+
+### Timings (ornith-max via LiteLLM → host Ollama, one GPU slot)
+
+| Step | Idle GPU | With Jared's heartbeat turn concurrent |
+|---|---|---|
+| mention → "picked up" in thread | ~6 s | ~10 s |
+| mention → PR opened | 10–20 s | 70 s |
+| push → `ci / test (pull_request)` success | ~25 s | ~25 s |
+| review request → `APPROVED` review in Gitea + thread | ~30 s | ~30 s |
+| whole `make team-smoke` | ~60 s | 96 s |
+| Erlich "summarise this channel" | ~10 s | – |
+| Dinesh mention on `qwen3.8-max` | ~20 s | – |
+
+### Not run and why
+
+- Merging the PRs: left to the human on purpose (`demo-calc` PR #4 and #5 are open, approved, CI green; #1–#3 from the fixing runs were closed and their branches deleted).
+- NIP-OA owner attestation, relay-hosted git, Gitea orgs: out of scope per §1.
+- Jared's issue-triage path (labels/assignees) was not exercised beyond the heartbeat's read-only status check: the fixture repo has no issues.
+
+### Addendum 2026-09-13: repositories live in a Gitea organization
+
+**Problem.** Dinesh could not create a repository. Four dead ends, each verified live: no non-admin can create a repo in another user's namespace (the plan put every repo under `GITEA_ADMIN_USER`); creating in his own namespace needs the `write:user` token scope, which the agent tokens lacked; push-to-create is off by default; `POST /api/v1/repos` does not exist (404). §1 and §7 "Not run" above listed org/teams as out of scope; that is withdrawn.
+
+**Fix.** One Gitea organization, name from the new `.env` variable `TEAM_GITEA_ORG` (default `piedpiper`, visibility `private`), owned by `GITEA_ADMIN_USER`. `GITEA_OWNER` in `docker-compose.yml` is now `${TEAM_GITEA_ORG:-piedpiper}` (was the admin user). Files changed:
+
+- `.env.example`, `docs/spec.md` §3: `TEAM_GITEA_ORG=piedpiper`.
+- `scripts/bootstrap-team.sh` (idempotent, run twice): (1) probes `GET /user/orgs` with `GITEA_ADMIN_TOKEN` and, on 403 `required scope`, re-mints it with `write:repository,write:user,write:organization`; (2) mints agent tokens with `write:repository,write:issue,read:user,write:organization`, re-minting under-scoped ones the same way (old tokens stay valid until deleted); (3) creates the org and one team `agents` with `permission: write`, units `repo.code`/`repo.issues`/`repo.pulls`/`repo.releases`/`repo.actions`, `can_create_org_repo: true`, `includes_all_repositories: true`, members `dinesh`/`gilfoyle`/`jared` (Gilfoyle is read-only by persona, not permission); (4) creates `demo-calc` inside the org, or transfers an existing `${GITEA_ADMIN_USER}/demo-calc` into it with `POST /repos/{o}/{r}/transfer {"new_owner": "<org>"}`.
+- `scripts/bootstrap-gitea.sh`: fresh admin tokens carry `write:repository,write:user,write:organization`.
+- `agents/ci-python.yaml` (new): the single source of the Python CI workflow. The bootstrap copies it into `demo-calc`; Dinesh copies `/opt/team/agents/ci-python.yaml` into repos he creates.
+- `agents/dinesh.md` step 2: for a new project, `. ~/.gitea.env && curl … POST /orgs/$GITEA_OWNER/repos`, then `.gitea/workflows/ci.yaml` (from the template) and `pyproject.toml` in the first commit; once the PR is open, `POST …/branch_protections` with the bootstrap's JSON (merge whitelist included, `$GITEA_ADMIN` inlined into the prompt by the entrypoint like `$GITEA_URL`).
+- `agents/TEAM.md`: repositories live in the organization; agents may create repos there and nowhere else; only `$GITEA_ADMIN` can merge and an agent must never claim to have merged; links are posted exactly as the API's `html_url` returns them (Gitea is plain http here; Dinesh once typed `https://127.0.0.1:3003/…`, which a human cannot open; Gilfoyle's persona uses the literal API URL and was unaffected).
+- `docker-compose.yml`: `GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}` added to the team env.
+- **Merge enforced by Gitea, not by persona.** Gilfoyle (team `write`; his own approval satisfies the protection) told a thread a PR was "approved and merged"; it was not and he corrected himself, but Gitea would have allowed the merge. The branch protection now also sets `enable_merge_whitelist: true, merge_whitelist_usernames: [GITEA_ADMIN_USER]`: `scripts/bootstrap-team.sh` sets it on new repos and `PATCH`es an existing protection that lacks it when re-run; Dinesh's JSON carries it too. Applied live to `demo-calc` and `hello-py`. (Verification output of Gilfoyle's merge attempt: to be pasted by the coordinator below.) Verified after applying it to `demo-calc` and `hello-py`: Gilfoyle's `POST …/pulls/6/merge` with CI green and his own approval returned `405 {"message":"User not allowed to merge PR"}`; the PR stayed open. Re-running `make team-bootstrap` printed `branch protection on main: merge restricted to stackadmin` for the pre-existing protection (PATCH path).
+- `scripts/team-smoke.sh`, `scripts/smoke-test.sh` (runner section): read `demo-calc` under `${TEAM_GITEA_ORG:-piedpiper}`.
+- `docs/spec.md` §2, §5.8 (new "Organization" block), §7 G12; `README.md` "The agent team", Security notes, Make targets, Layout.
+
+**Verified live (2026-09-13).**
+
+- Transfer: the two open PRs (#4, #5) and the `main` branch protection survived `POST /repos/stackadmin/demo-calc/transfer`; the old URL answers 301.
+- `POST /orgs/{org}/repos` needs `write:organization`; `GET /user/orgs` answers 200 with the scope and 403 `required scope` without, so it serves as the scope probe.
+- A team member with `write` may `POST /repos/{o}/{r}/branch_protections` on a repo he created (201); `admin` is not needed. Effective permissions for a member on an org repo: `push: true`, `admin: false`.
+- Gitea 1.27 reports per-unit access: the team's `permission` reads `none` in the API while `units_map` carries the `write` values.
+- Token cleanup: `DELETE /users/{u}/tokens/{id}` with basic auth works; the `gitea admin user` CLI in this version has no delete-access-token subcommand that takes `--username`.
+- `make team-bootstrap` twice: first run re-minted the admin and agent tokens, created the org and team, transferred `demo-calc`; second run printed only `exists`/`team member` lines.
+- New-project path: "create a repository named hello-py with a Python package, a pytest test, CI, and open a pull request" → Dinesh created `piedpiper/hello-py`; the first commit had `.gitea/workflows/ci.yaml`, `pyproject.toml`, the package and the test; PR #1 open after ~50 s; `ci / test (pull_request)` `success`; branch protection on `main` set by Dinesh; Gilfoyle `APPROVED` ~40 s after the request.
+
+**Follow-up 2026-09-13 (later the same day): a human login, and two portability fixes.** The operator noticed that an account on a separate production Gitea does not exist on the bundled one and vice versa: they are unrelated databases, and nothing in plan 08 had created a human user on the bundled instance. Decision: the stack stays on the bundled Gitea until v1. Changes: `TEAM_HUMAN_USER` (default `richard`) + `TEAM_HUMAN_PASSWORD` (`make init`) in `.env.example`/spec §3; `scripts/bootstrap-team.sh` creates the user (non-admin), adds them to the org `Owners` team and to every merge whitelist next to the admin (create and PATCH paths); `docker-compose.yml` passes `GITEA_HUMAN` to the team env and the entrypoint inlines it into the prompt; `agents/TEAM.md` names Richard's login as the merger; `agents/dinesh.md` whitelists admin + human on repos he creates. `agents/ci-python.yaml` now clones from `GITHUB_SERVER_URL` (the loopback literal is gone; pushed to `demo-calc` main, push-event run `completed/success`), and `scripts/team-entrypoint.sh` keeps the scheme of `GITEA_URL` in `~/.git-credentials`. Verified: bootstrap twice (`created gitea user richard (you)` / `org owner richard` / `merge restricted to stackadmin,richard`, then only `exists` lines); `GET /user` as richard → `is_admin: false`; richard lists both private org repos; richard squash-merged `demo-calc` PR #8 and `hello-py` PR #1 (Dinesh's new-project PR). Gotcha: right after a protection change, `POST …/merge` returns `405 Please try again later` while Gitea re-checks the PR; a retry a few seconds later succeeds. Pointing the team at an external Gitea is recorded as unsupported in README and spec §5.8.

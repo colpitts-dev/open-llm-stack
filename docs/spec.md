@@ -16,6 +16,8 @@ A local-first, open-weights development stack. One `docker compose up` gives a d
 | Team collaboration | Buzz relay (+ Postgres, Redis, MinIO) | **3002** | `buzz` | `ghcr.io/block/buzz:sha-e17cdd9`, `postgres:17.11-alpine`, `redis:7.4.11-alpine`, `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`, `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` |
 | Version control | Gitea (SQLite) | **3003** | `gitea` | `docker.gitea.com/gitea:1.27.3` |
 | Optional: Buzz agent | buzz-acp + buzz-agent (sprig) | none (host network) | `buzz-agent` | `ghcr.io/block/buzz-sprig:sha-e17cdd9` |
+| Optional: CI runner | Gitea Actions runner "Laurie" (`gitea-runner`) | none (host network; docker.sock mounted) | `gitea-runner` | `docker.gitea.com/act_runner:3.4.2` (verified 2026-09-13); jobs run in `python:3.12-alpine` |
+| Optional: agent team | `dinesh`, `gilfoyle`, `jared`, `erlich` (buzz-acp + buzz-agent, sprig; one volume each) | none (host network) | `team` | `ghcr.io/block/buzz-sprig:sha-e17cdd9` |
 | Optional: Ollama | Ollama server | none | `ollama` | `ollama/ollama:0.34.0` |
 | Optional: llama.cpp | llama.cpp server (CPU) | none | `llamacpp` | `ghcr.io/ggml-org/llama.cpp:server-b10920` (CUDA variant: `server-cuda-b10920`) |
 
@@ -41,19 +43,25 @@ open-llm-stack/
 ├── docker-compose.yml           # all services, profile-gated
 ├── .env.example                 # every variable, documented; `make init` fills secrets
 ├── .gitignore
-├── Makefile                     # init, up, down, ps, logs, test, reload, gitea-bootstrap
+├── Makefile                     # init, up, down, ps, logs, test, reload, gitea-bootstrap, team-bootstrap, team-smoke, team-model
 ├── docs/spec.md                 # this file
-├── plans/                       # implementation plans 01–07
+├── plans/                       # implementation plans 01–08
 ├── proxy/
 │   ├── config.yaml.example      # committed LiteLLM model registry sample
 │   └── config.yaml              # gitignored, the live registry (`make init` copies it)
+├── agents/                      # team personas: TEAM.md (norms) + dinesh/gilfoyle/jared/erlich.md + jared-heartbeat.md (plan 08)
+│   └── ci-python.yaml           # the one Python CI workflow: bootstrap copies it into demo-calc, Dinesh into new repos
+├── runner/config.yaml           # Gitea Actions runner config: label python, host network (plan 08)
 ├── scripts/
 │   ├── init.sh                  # .env + secrets + proxy/config.yaml, idempotent
 │   ├── check-ports.sh           # refuses `make up` when 3000–3003 are held by something else
 │   ├── preflight.sh             # LLM_BASE_URL reachable from inside litellm?
 │   ├── smoke-test.sh            # per-layer gates, skips layers whose profile is off
 │   ├── bootstrap-gitea.sh       # admin user + API token, idempotent
-│   └── buzz-smoke.sh            # CLI round trip: mention the agent, expect a reply
+│   ├── buzz-smoke.sh            # CLI round trip: mention the agent, expect a reply
+│   ├── bootstrap-team.sh        # Gitea users + tokens for the agents, org TEAM_GITEA_ORG + team, runner token, fixture repo demo-calc, idempotent
+│   ├── team-entrypoint.sh       # shared team-agent entrypoint: guards, git creds, prompt assembly, context caps from LiteLLM
+│   └── team-smoke.sh            # job thread → Dinesh PR → green CI → Gilfoyle review
 └── models/                      # gitignored; GGUF files for the llamacpp profile
 ```
 
@@ -66,7 +74,7 @@ open-llm-stack/
 ```bash
 # --- Which layers run. Remove a profile to disable that layer; set its *_URL to use an external one.
 COMPOSE_PROFILES=litellm,openwebui,buzz,gitea
-# Optional extras: ollama, llamacpp, buzz-agent  (comma-append, e.g. ...,gitea,buzz-agent)
+# Optional extras: ollama, llamacpp, buzz-agent, gitea-runner, team  (comma-append, e.g. ...,gitea,gitea-runner,team)
 
 # --- Host interface for every published port. 0.0.0.0 exposes the stack to your LAN.
 BIND_HOST=127.0.0.1
@@ -139,6 +147,43 @@ GITEA_ADMIN_PASSWORD=
 # written by `make gitea-bootstrap`
 GITEA_ADMIN_TOKEN=
 
+# --- Agent team (profile: team) — Dinesh (builder), Gilfoyle (reviewer), Jared (coordinator), Erlich (assistant)
+# One model for the whole team; must be a model_name in proxy/config.yaml. Switch with `make team-model M=qwen3.8-max`.
+# Measured 2026-09-13: ornith-max, qwen3.8-max and laguna-max publish multi-step results; qwen3.6-max does not.
+# Gitea organization that owns every team repository; agents can create repositories in it (make team-bootstrap creates it)
+TEAM_GITEA_ORG=piedpiper
+# Your own (non-admin) Gitea login on the bundled instance: org owner, and the only user besides the admin who may merge
+TEAM_HUMAN_USER=richard
+# make init: 24 hex
+TEAM_HUMAN_PASSWORD=
+TEAM_MODEL=ornith-max
+# Leave blank: each agent reads max_input_tokens/max_output_tokens for TEAM_MODEL from LiteLLM's registry at startup.
+# Set only to force a smaller window than the registry declares.
+TEAM_MAX_CONTEXT_TOKENS=
+# Comma-separated 64-hex pubkeys of the humans the agents obey (Richard). Find yours in the Buzz app profile,
+# or from a message you posted: `buzz messages get --channel <uuid>` shows `pubkey`. First entry is the agents' owner.
+TEAM_ALLOWLIST=
+TEAM_HEARTBEAT_SECONDS=1800    # Jared's proactive triage tick; 0 disables
+# Keys: `make init` fills these (one identity per agent, plus a throwaway human for the smoke test)
+TEAM_DINESH_PRIVATE_KEY=
+TEAM_DINESH_PUBKEY=
+TEAM_GILFOYLE_PRIVATE_KEY=
+TEAM_GILFOYLE_PUBKEY=
+TEAM_JARED_PRIVATE_KEY=
+TEAM_JARED_PUBKEY=
+TEAM_ERLICH_PRIVATE_KEY=
+TEAM_ERLICH_PUBKEY=
+TEAM_SMOKE_PRIVATE_KEY=
+TEAM_SMOKE_PUBKEY=
+# Gitea accounts for the agents (make team-bootstrap creates them and writes the tokens)
+TEAM_GITEA_PASSWORD=
+TEAM_DINESH_GITEA_TOKEN=
+TEAM_GILFOYLE_GITEA_TOKEN=
+TEAM_JARED_GITEA_TOKEN=
+# --- Gitea Actions runner (profile: gitea-runner)
+GITEA_RUNNER_TOKEN=            # make team-bootstrap: `gitea actions generate-runner-token`
+GITEA_RUNNER_NAME=laurie
+
 # --- Optional backends ----------------------------------------------------------------------
 # LLAMACPP_MODEL_FILE=your-model.gguf   # file inside ./models/, llamacpp profile only
 # LLAMACPP_CTX_SIZE=0                   # 0 = read from the model file
@@ -172,6 +217,8 @@ Every service joins it. Containers address each other by service name (`litellm`
 | `buzz` | `buzz`, `buzz-db`, `buzz-redis`, `buzz-minio`, `buzz-minio-init` |
 | `gitea` | `gitea` |
 | `buzz-agent` | `buzz-agent` |
+| `gitea-runner` | `gitea-runner` |
+| `team` | `dinesh`, `gilfoyle`, `jared`, `erlich` |
 | `ollama` | `ollama` |
 | `llamacpp` | `llamacpp` |
 
@@ -270,6 +317,51 @@ Source: `github.com/block/buzz` (Apache-2.0). `sha-e17cdd9` = main commit 2026-0
 - Already pulled here: every image in §1 except `ghcr.io/ggml-org/llama.cpp:server-b10920` and `ollama/ollama:0.34.0`. `docker pull` works on this host.
 - MinIO images must be pulled from **quay.io**; Docker Hub returned `denied` for anonymous manifest access to `minio/minio` and `minio/mc` on 2026-09-12.
 
+### 5.8 Agent team + Gitea Actions (plan 08; verified 2026-09-13)
+
+Profiles `gitea-runner` (service `gitea-runner`, "Laurie") and `team` (services `dinesh`, `gilfoyle`, `jared`, `erlich`). Variables: the `TEAM_*` and `GITEA_RUNNER_*` block in §3. Gates G11–G14 in §7.
+
+**Runner.**
+- `docker.gitea.com/act_runner:3.4.2` is the newest semver on Gitea's own registry (the `gitea/act_runner` repo on Docker Hub is stale; do not use it). Entrypoint `/sbin/tini -- run.sh`; binary `gitea-runner` v3.4.2. `run.sh` honours `CONFIG_FILE`, `GITEA_INSTANCE_URL`, `GITEA_RUNNER_REGISTRATION_TOKEN` (or `_FILE`), `GITEA_RUNNER_NAME`, `GITEA_RUNNER_LABELS`, `GITEA_RUNNER_EPHEMERAL`, `GITEA_RUNNER_ONCE`, `GITEA_MAX_REG_ATTEMPTS`. Registration state persists in `/data/.runner` (volume `gitea-runner-data`; the healthcheck is `test -s /data/.runner`). Config `runner/config.yaml`: one label `python:docker://python:3.12-alpine`, capacity 2, `container.network: host`, `/var/run/docker.sock` mounted (jobs are sibling containers: same trust boundary as the operator's docker).
+- Job image `python:3.12-alpine` (Docker Hub) has no git; the workflow's first step is `apk add --no-cache git`.
+- Gitea 1.27.3 has Actions **on by default** (`has_actions: true` on new repos; no `[actions]` config needed). Runner token: `docker compose exec -T -u git gitea gitea actions generate-runner-token` (40 chars). The admin API route for it needs `write:admin`, which `GITEA_ADMIN_TOKEN` lacks.
+- Networking: runner and job containers share the host network, so `GITEA_INSTANCE_URL` and the job's clone URL are the loopback `ROOT_URL` (`http://127.0.0.1:3003`); the job clones `main` with `${{ github.token }}` (`http://x-access-token:${GITHUB_TOKEN}@127.0.0.1:3003/${GITHUB_REPOSITORY}.git`), then checks out the PR head or the pushed branch (gotcha 6).
+- Commit status contexts: `ci / test (push)` on pushes, `ci / test (pull_request)` on PRs. Branch protection on `main` names the latter: `enable_status_check` + `status_check_contexts: ["ci / test (pull_request)"]`, `required_approvals: 1`, `block_on_rejected_reviews: true`, `enable_push: false` (direct push blocked).
+- Gitea forbids self-approval (reviewer must differ from the PR author), so `dinesh`, `gilfoyle` and `jared` each get their own Gitea user (password `TEAM_GITEA_PASSWORD`) and token (scopes `write:repository,write:issue,read:user,write:organization`) and sit on the `agents` team of the organization `TEAM_GITEA_ORG` (next block), which owns the fixture repo `demo-calc`. `erlich` has no Gitea identity.
+- Verified API shapes (swagger on the live instance): `POST /repos/{o}/{r}/pulls` `{title, head, base, body}`; `POST /repos/{o}/{r}/pulls/{n}/reviews` `{event: APPROVED|REQUEST_CHANGES|COMMENT, body, comments[]}` (enum as verified live, see gotcha 5); `POST /repos/{o}/{r}/pulls/{n}/reviews/{id}` `{event, body}` submits a pending draft; `GET /repos/{o}/{r}/pulls/{n}.diff` (unified diff); `POST /repos/{o}/{r}/branch_protections`; `GET /repos/{o}/{r}/commits/{ref}/status` (`state`: `pending|success|failure`); `PUT /repos/{o}/{r}/collaborators/{user}` `{permission}`; `GET /repos/{o}/{r}/actions/runs`.
+
+**Organization (added 2026-09-13; every fact verified live).**
+- Why: a non-admin cannot create a repository in another user's namespace (the first version put every repo under `GITEA_ADMIN_USER`, so Dinesh could not create one); creating in his own namespace needs the `write:user` token scope; push-to-create is off by default; `POST /api/v1/repos` does not exist (404). Repositories therefore live in one organization, `TEAM_GITEA_ORG` (default `piedpiper`, visibility `private`, owned by `GITEA_ADMIN_USER`). `GITEA_OWNER` in `docker-compose.yml` is the org, not the admin user; `agents/TEAM.md` says agents may create repos there and nowhere else.
+- `POST /orgs/{org}/repos` needs the `write:organization` token scope. `GET /user/orgs` is a cheap scope probe: 200 with the scope, 403 `required scope` without. `scripts/bootstrap-team.sh` uses it to re-mint under-scoped tokens: `GITEA_ADMIN_TOKEN` → `write:repository,write:user,write:organization` (a fresh `scripts/bootstrap-gitea.sh` now mints the same), agent tokens → the four scopes above. Old tokens stay valid until deleted: `DELETE /users/{u}/tokens/{id}` with basic auth (the `gitea admin user` CLI in 1.27.3 has no delete-access-token subcommand that takes `--username`).
+- One team `agents`: `permission: write`, `units` `repo.code`, `repo.issues`, `repo.pulls`, `repo.releases`, `repo.actions`, `can_create_org_repo: true`, `includes_all_repositories: true`; members `dinesh`, `gilfoyle`, `jared` (Gilfoyle is read-only by persona, not by permission). The API shows the team's `permission` as `none` while `units_map` carries the per-unit `write` values (1.27 reports per-unit access); effective permissions for a member on a repo: `push: true`, `admin: false`. A member with `write` may `POST /repos/{o}/{r}/branch_protections` on a repo he created (201); `admin` is not needed.
+- `demo-calc` is created in the org, or an existing `${GITEA_ADMIN_USER}/demo-calc` from an older bootstrap is transferred with `POST /repos/{o}/{r}/transfer` `{"new_owner": "<org>"}`: the two open PRs and the branch protection survived the transfer; the old URL answers 301. The bootstrap is idempotent (run twice).
+- `agents/ci-python.yaml` is the single source of the Python workflow: the bootstrap copies it into `demo-calc`; for a new project Dinesh creates the repo with `POST /orgs/$GITEA_OWNER/repos`, copies `/opt/team/agents/ci-python.yaml` (bind-mounted into his container) to `.gitea/workflows/ci.yaml` and adds `pyproject.toml` in the first commit, and once the PR is open protects `main` with the bootstrap's branch_protections JSON (`agents/dinesh.md` step 2). Measured: "create a repository named hello-py with a Python package, a pytest test, CI, and open a pull request" → `piedpiper/hello-py` created, first commit carried `.gitea/workflows/ci.yaml`, `pyproject.toml`, package and test, PR #1 open after ~50 s, `ci / test (pull_request)` `success`, branch protection on `main` set by Dinesh, Gilfoyle `APPROVED` ~40 s after the request.
+- **Merge is enforced by Gitea, not by persona.** With team `write` plus his own approval satisfying the protection, Gilfoyle could have merged (he told a thread a PR was "approved and merged"; it was not, and he corrected himself, but Gitea would have allowed it). The branch protection therefore also sets `enable_merge_whitelist: true`, `merge_whitelist_usernames: ["<GITEA_ADMIN_USER>"]`: in `scripts/bootstrap-team.sh` for new repos, as a `PATCH` on an existing protection that lacks it when re-run, and in the JSON Dinesh applies to a repo he created. `docker-compose.yml` passes `GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}` to the team env and the entrypoint inlines `$GITEA_ADMIN` into the prompt like `$GITEA_URL`; `agents/TEAM.md` states that only `$GITEA_ADMIN` can merge and that an agent must never claim to have merged. Applied live to `demo-calc` and `hello-py`.
+- Links: `agents/TEAM.md` tells agents to post URLs exactly as the API's `html_url` returns them. Gitea here is plain `http`; Dinesh once typed `https://127.0.0.1:3003/…`, which a human cannot open (Gilfoyle was unaffected: his persona uses the literal API URL).
+- **Your own login (added 2026-09-13).** `TEAM_HUMAN_USER` (default `richard`, password `TEAM_HUMAN_PASSWORD` from `make init`) is created by `make team-bootstrap` as a plain user, added to the org's `Owners` team, and listed with the admin in every merge whitelist (`merge_whitelist_usernames: [GITEA_ADMIN_USER, TEAM_HUMAN_USER]`, also in the protection Dinesh applies to repos he creates: `$GITEA_HUMAN` is inlined into his prompt). Verified: `GET /user` with basic auth → `is_admin: false`; the user lists the private org repos; squash-merged an approved, green PR via `POST …/pulls/{n}/merge`. Right after a branch-protection change Gitea answers that call `405 {"message":"Please try again later"}` while it re-checks the PR; retrying a few seconds later succeeds (seen twice). The bundled Gitea and any external one (for example an operator's production instance) are unrelated databases: accounts exist on one or the other, and the team layer supports only the bundled instance (its bootstrap uses the Gitea CLI through `docker compose exec`).
+- Portability: `agents/ci-python.yaml` clones from `GITHUB_SERVER_URL` (= `ROOT_URL` = `GITEA_PUBLIC_URL`, verified on push and pull_request runs) instead of a literal loopback address, and the entrypoint writes the git credential line with the scheme of `GITEA_URL` rather than a hardcoded `http://`.
+
+**Team agents.**
+- Image is the sprig image of §5.4. Additional verified facts: `git 2.49.1`, `curl`, `bash`, `rg`, `tree`; **no `jq`, `python3` or `openssl`** (personas say so; scripts inside the container parse JSON with `sed`/`grep`/bash). Consequence: Dinesh cannot run a Python test suite locally; `agents/dinesh.md` has him push and read the PR's commit status (`GET …/commits/<sha>/status`) after CI runs. `git config --global credential.helper store` + `~/.git-credentials` works. User `agent` (uid 1000), `HOME=/home/agent` = the harness working dir (`REPOS/`, `WORK_LOGS/`, `OUTBOX/`); one named volume per agent (`team-<role>`).
+- All four run `network_mode: host` for the reason in §4.6 and publish nothing. Shared entrypoint `scripts/team-entrypoint.sh`: runtime guards → wait for `/_liveness` → git identity + credential store + `~/.gitea.env` (roles with a token) → prompt file `/home/agent/.prompt.md` = `agents/TEAM.md` + `agents/<role>.md` with `$GITEA_URL`/`$GITEA_OWNER` substituted literally → context caps from LiteLLM → `buzz users set-profile --name` → `exec sprig-entrypoint`.
+- buzz-acp flags used (all in `buzz-acp --help` of the pinned image): `BUZZ_ACP_SYSTEM_PROMPT_FILE`, `BUZZ_ACP_SESSION_POLICY=thread` (dinesh, gilfoyle) or `channel` (jared, erlich), `BUZZ_ACP_RESPOND_TO=allowlist` with `BUZZ_ACP_RESPOND_TO_ALLOWLIST=${TEAM_ALLOWLIST},${TEAM_SMOKE_PUBKEY},<the four TEAM_*_PUBKEY>` (teammates included: gotcha 4), `BUZZ_ACP_HEARTBEAT_INTERVAL` + `BUZZ_ACP_HEARTBEAT_PROMPT_FILE` (jared only), `BUZZ_ACP_AGENTS=1`, `BUZZ_ACP_DISPLAY_NAME`. buzz-agent: `BUZZ_AGENT_REQUIRE_REPLY=1` (present in the pinned binary; rerolls a turn that ends without a publish, at most twice; advisory, not a guarantee).
+- `TEAM_ALLOWLIST` holds the operator's 64-hex pubkey (first entry = the agents' owner). Find it in the Buzz app profile, or from a message you posted: `buzz messages get --channel <uuid>` shows `pubkey`. On this host it is also the pubkey whose kind-0 profile carries the git user's name.
+- **One-variable model switch.** At start the entrypoint reads `max_input_tokens`/`max_output_tokens` for `OPENAI_COMPAT_MODEL` (= `TEAM_MODEL`) from `GET /v1/model/info` and exports `BUZZ_AGENT_MAX_CONTEXT_TOKENS`/`BUZZ_AGENT_MAX_OUTPUT_TOKENS`, logging `model=<name> context=<in> output=<out>`. Verified: `ornith-max` → `237568/16384`, `qwen3.8-max` → `106496/16384`. A name not in the registry exits 1 (`model '<name>' is not in proxy/config.yaml`). `make team-model M=<name>` checks the name against `/v1/models` first, rewrites `TEAM_MODEL` in `.env`, and re-creates the four containers. `TEAM_MAX_CONTEXT_TOKENS` (blank by default) only forces a smaller input window.
+- Model: `ornith-max` by default (§3 measurements). The host Ollama runs `OLLAMA_NUM_PARALLEL=1`; four agents + CI queue on one GPU slot. Under the team smoke, `docker exec ollama ollama ps` stayed at `100% GPU` throughout (G13). A local model does not know its own name (Dinesh on `qwen3.8-max` called itself "Claude"): read `TEAM_MODEL` or the `model=` log line, never ask the agent.
+- Measured 2026-09-13 (final clean run, `ornith-max`, Jared's heartbeat turn running concurrently on the same GPU slot): each agent `presence set to online` ~1 s after its relay wait; fixture CI on `main` `success` within ~1 min of the runner registering; mention → Dinesh PR opened in 70 s (10–20 s with the GPU idle); `ci / test (pull_request)` `success` ~25 s after push; Gilfoyle `APPROVED` ~30 s after the review request; whole `make team-smoke` 96 s. Erlich answered a "summarise this channel" mention in ~10 s. Jared with `TEAM_HEARTBEAT_SECONDS=60` logged `heartbeat_fired`, opened a heartbeat session, found the `triage` channel UUID, queried Gitea for open PRs/issues and, with nothing to report, posted nothing. After `make team-model M=qwen3.8-max` Dinesh answered a mention in ~20 s.
+
+**Gotchas found during execution (both verified).**
+1. Compose interpolates `${VAR:?}` for **every** service, even when its profile is off. A `:?` on a value filled later by `make team-bootstrap` (`GITEA_RUNNER_TOKEN`, `TEAM_*_GITEA_TOKEN`) or by the operator (`TEAM_ALLOWLIST`) would break every `docker compose` call before bootstrap can run. `docker-compose.yml` therefore uses `${VAR:-}` for those, and `scripts/team-entrypoint.sh` guards at runtime: a blank allowlist, or a missing Gitea token for any role but `erlich`, exits 1 with a message naming the fix. Keys from `make init` keep `:?run make init`.
+2. In the sprig image, `grep -o … | head -1` under `set -o pipefail` dies with SIGPIPE (exit 141) when `head` closes the pipe first (timing dependent). The entrypoint parses the registry JSON with bash `[[ … =~ … ]]` instead of a pipeline.
+3. buzz-acp starts `buzz-dev-mcp` (the shell tool) with a **scrubbed environment**: `HOME` and `PATH` only (read from `/proc/<pid>/environ` inside the `dinesh` container, 2026-09-13), and `buzz-acp --help` has no passthrough flag. The agents' shell therefore never sees `GITEA_URL`, `GITEA_OWNER` or `GITEA_TOKEN`. Fix: the entrypoint inlines the non-secret `GITEA_URL` and `GITEA_OWNER` into the assembled prompt (`sed` on `/home/agent/.prompt.md`) and, for roles with a token, writes `/home/agent/.gitea.env` (mode 600: `export GITEA_URL=… GITEA_OWNER=… GITEA_USER=… GITEA_TOKEN=…`). `agents/TEAM.md` states that the shell starts empty, and every API call in the personas is written `. ~/.gitea.env && curl …`. Erlich gets no env file. `git clone`/`push` were unaffected because the credential store is file-based. Rule for persona files: `$GITEA_URL`, `$GITEA_OWNER` and `$GITEA_ADMIN` may appear bare (substituted at container start); `$GITEA_TOKEN` only after sourcing `~/.gitea.env` in the same command.
+4. With only humans on the allowlist, agent-to-agent mentions are silently dropped: Dinesh's `@Gilfoyle review please <url>`, Jared→Dinesh and Erlich→Dinesh never started a session (verified: Gilfoyle opened no session). `docker-compose.yml` therefore appends the four `TEAM_*_PUBKEY` values to `BUZZ_ACP_RESPOND_TO_ALLOWLIST`, so Dinesh requests the review himself once the PR is up; `scripts/team-smoke.sh` still sends its own review request after CI is green.
+5. Gitea 1.27.3 review `event` enum is `APPROVED | REQUEST_CHANGES | COMMENT` (plus `PENDING`, `REQUEST_REVIEW`), **not** `APPROVE`. Any unknown value is accepted with 200 and stored as a `PENDING` draft only the reviewer can see (Gitea logs `Unsupported review webhook type`). A draft is submitted with `POST /repos/{o}/{r}/pulls/{n}/reviews/{id}` `{event, body}`; there is no `/submit` route (405). `agents/gilfoyle.md` writes the JSON to a file via a quoted heredoc and checks the returned `state`; `scripts/team-smoke.sh` accepts only a non-`PENDING` Gilfoyle review.
+6. On `pull_request` events Gitea sets `GITHUB_REF_NAME` to the PR **index**, not a branch (`git clone --branch` failed with `Remote branch 1 not found`). The workflow `agents/ci-python.yaml` (copied into repos by `scripts/bootstrap-team.sh` and by Dinesh) clones `main`, then: if `${{ github.event.number }}` is set, `git fetch origin +refs/pull/<n>/head && git checkout FETCH_HEAD`; otherwise `git checkout "$GITHUB_REF_NAME"`.
+7. Shell quoting: Dinesh and Gilfoyle both mangled command strings containing backticks or `--` (and self-corrected, costing turns). `agents/TEAM.md` tells them to write message bodies and JSON to files with a quoted heredoc and pass `--content "$(cat msg.txt)"` / `-d @file.json`.
+8. `scripts/team-smoke.sh` records the highest PR number before posting the job and accepts only a Dinesh PR numbered above it; without that, a leftover open PR from an earlier run was matched.
+
+**Out of scope (by design):** relay-hosted git / `buzz pr` (the desktop app cannot attach non-relay repos), NIP-OA owner attestation for server agents (no CLI mints it), mirrors. (Gitea org/teams were out of scope until 2026-09-13; see the Organization block above.)
+
 ---
 
 ## 6. Model registry sample (`proxy/config.yaml.example`)
@@ -303,3 +395,7 @@ Every entry carries `execution_locus: local` and a `model_revision` string, so d
 | G8 | Nothing published beyond `BIND_HOST` | `docker compose ps --format '{{.Name}} {{.Ports}}'` shows only `127.0.0.1:` |
 | G9 | External swap works | Open WebUI pointed at `LITELLM_URL=http://host.docker.internal:3000` with profile `litellm` still on (simulates an external gateway) still lists models |
 | G10 | Optional backends | `COMPOSE_PROFILES=…,ollama` + `LLM_BASE_URL=http://ollama:11434` passes G2; same for llamacpp with a GGUF |
+| G11 | Runner registered, fixture CI green on `main` | smoke-test (gitea-runner section): `registered` from `test -s /data/.runner`, then `GET …/demo-calc/actions/runs` → `run completed/success main` |
+| G12 | Team job loop | `scripts/team-smoke.sh` (also `make test` with profile `team`): job thread → new PR by `dinesh` in `${TEAM_GITEA_ORG}/demo-calc` → `ci / test (pull_request)` = `success` → non-`PENDING` review by `gilfoyle` → `TEAM SMOKE PASS` (measured 96 s) |
+| G13 | GPU stays on GPU under team load | during/after G12, `docker exec ollama ollama ps` shows the team model at `100% GPU` |
+| G14 | One-variable model switch | `make team-model M=qwen3.8-max` → each agent logs `model=qwen3.8-max context=106496 output=16384` and answers a mention; `make team-model M=nope-model` prints `not registered` and `make` exits 2 (the recipe exits 1) |

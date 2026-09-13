@@ -1,0 +1,14 @@
+# Gitea Actions runner (gitea-runner v3.4.2). Host network so jobs reach the loopback ROOT_URL — verified.
+log:
+  level: info
+runner:
+  file: /data/.runner
+  capacity: 2            # concurrent jobs; each is a container on the host network
+  timeout: 20m
+  labels:
+    - "python:docker://python:3.12-alpine"
+container:
+  network: host
+  privileged: false
+  docker_host: ""        # use the mounted /var/run/docker.sock
+  force_pull: false      # images are pre-pulled; never re-pull on every job

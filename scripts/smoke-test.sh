@@ -94,10 +94,19 @@ test_gitea() {
   curl -fsS -X DELETE -H "$auth" "$base/api/v1/repos/${GITEA_ADMIN_USER}/${repo}" && echo "deleted $repo"
 }
 
+test_gitea_runner() {
+  local base="http://${BIND_HOST}:${GITEA_PORT:-3003}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}"
+  echo "--- gitea-runner: registered + last CI run on demo-calc"
+  docker compose exec -T gitea-runner sh -c 'test -s /data/.runner && echo registered'
+  curl -fsS -H "$auth" "$base/repos/${TEAM_GITEA_ORG:-piedpiper}/demo-calc/actions/runs" | jq -r '.workflow_runs[0] | "run \(.status)/\(.conclusion // "-") \(.head_branch)"'
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
 has_profile buzz && test_buzz
 has_profile gitea && test_gitea
 has_profile buzz-agent && ./scripts/buzz-smoke.sh
+has_profile gitea-runner && test_gitea_runner
+has_profile team && ./scripts/team-smoke.sh
 echo "smoke test finished"

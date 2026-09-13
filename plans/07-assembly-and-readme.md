@@ -226,7 +226,7 @@ Deviation from the plan text and why: `docker-compose.yml` pins `name: open-llm-
 
 ```
 $ make down                      -> Network open-llm-stack Removed; networks: 0; containers (label project=open-llm-stack): 0
-$ tmp=$(mktemp -d) && git clone -q /home/adam/code/open-llm-stack "$tmp/open-llm-stack"   # HEAD d396aea, no .env, no proxy/config.yaml
+$ tmp=$(mktemp -d) && git clone -q "$PWD" "$tmp/open-llm-stack"   # HEAD d396aea, no .env, no proxy/config.yaml
 $ export COMPOSE_PROJECT_NAME=open-llm-stack-clone
 $ make init   (0.8 s)
 created .env from .env.example

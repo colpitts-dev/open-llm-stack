@@ -1,0 +1,20 @@
+# Gitea Actions workflow for Python repos in the team org. Copied verbatim into <repo>/.gitea/workflows/ci.yaml.
+# Runner label `python` = the gitea-runner profile; jobs run on the host network, so the (loopback) ROOT_URL is reachable.
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: python
+    steps:
+      - name: clone
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}   # set on pull_request only; GITHUB_REF_NAME is the PR index there, not a branch
+        run: |
+          apk add --no-cache git >/dev/null
+          # GITHUB_SERVER_URL = Gitea ROOT_URL (GITEA_PUBLIC_URL), so this works unchanged if the port or host changes
+          git clone -q "$(echo "$GITHUB_SERVER_URL" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")/${GITHUB_REPOSITORY}.git" src && cd src
+          if [ -n "${PR_NUMBER}" ]; then git fetch -q origin "+refs/pull/${PR_NUMBER}/head" && git checkout -q FETCH_HEAD; else git checkout -q "${GITHUB_REF_NAME}"; fi
+          git log -1 --oneline
+      - name: test
+        run: cd src && pip install -q -e . pytest && pytest -q

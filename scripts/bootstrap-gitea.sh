@@ -22,7 +22,7 @@ fi
 # token names must be unique per call -- nanoseconds + pid
 token=$(docker compose exec -T -u git gitea gitea admin user generate-access-token \
   --username "$GITEA_ADMIN_USER" --token-name "stack-$(date +%s%N)-$$" \
-  --scopes write:repository,write:user --raw | tr -d '\r\n')
+  --scopes write:repository,write:user,write:organization --raw | tr -d '\r\n')   # write:organization: the team org (plan 08)
 [ ${#token} -ge 20 ] || { echo "ERROR: token generation returned '$token'" >&2; exit 1; }
 sed -i "s|^GITEA_ADMIN_TOKEN=.*|GITEA_ADMIN_TOKEN=${token}|" .env
 echo "GITEA_ADMIN_TOKEN written to .env"
