@@ -270,6 +270,8 @@ services:
       BUZZ_PRIVATE_KEY: ${BUZZ_AGENT_PRIVATE_KEY:?run make init}
       BUZZ_RELAY_URL: ${BUZZ_RELAY_URL:-ws://127.0.0.1:3002}
       BUZZ_ACP_DISPLAY_NAME: ${BUZZ_AGENT_NAME:-stack-agent}
+      # Without this, local models often answer in text and end the turn; the harness never publishes text.
+      BUZZ_ACP_SYSTEM_PROMPT: ${BUZZ_AGENT_INSTRUCTIONS:?run make init}
       # harness: run buzz-agent (no Goose in this image), give it the dev-mcp tools, answer anyone (open relay)
       BUZZ_ACP_AGENT_COMMAND: buzz-agent
       BUZZ_ACP_AGENT_ARGS: ""

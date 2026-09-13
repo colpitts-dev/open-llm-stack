@@ -125,6 +125,9 @@ BUZZ_AGENT_PUBKEY=
 BUZZ_AGENT_NAME=stack-agent
 BUZZ_AGENT_MODEL=qwen3.6-max   # a model_name from proxy/config.yaml
 BUZZ_AGENT_MAX_CONTEXT_TOKENS=237568   # keep equal to that model's max_input_tokens in proxy/config.yaml
+# Agent instructions appended to the harness base prompt. Verified 2026-09-12: without an explicit
+# publish rule, local models answer in text the harness never posts (the reply shows only in the app's activity log).
+BUZZ_AGENT_INSTRUCTIONS='Your text output is NOT delivered to anyone; humans only see messages you publish. To answer, you MUST run: buzz messages send --channel <channel-uuid from the context block> --content "<your answer>". Do this for every question, then end your turn.'
 
 # --- Gitea (profile: gitea) -----------------------------------------------------------------
 GITEA_PORT=3003
