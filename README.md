@@ -302,6 +302,23 @@ make team-model M=nope-model     # prints "not registered in proxy/config.yaml";
 
 Measured 2026-09-13: `ornith-max`, `qwen3.8-max` and `laguna-max` publish multi-step results; `qwen3.6-max` does not, so it is a poor choice for the team. On `qwen3.8-max` Dinesh answered a mention in ~20 s. The four agents plus CI share one GPU slot on the host Ollama (`OLLAMA_NUM_PARALLEL=1`) by queueing; throughout the smoke run `docker exec ollama ollama ps` showed `100% GPU`.
 
+**Using your own Gitea.** The same scripts drive an instance you already run (on the LAN behind a private CA, or on the internet with a public certificate). Switch with `.env` only, after `make down`:
+
+```bash
+COMPOSE_PROFILES=litellm,openwebui,buzz,buzz-agent,team      # no gitea, no gitea-runner: the bundled runner must never register against your instance
+GITEA_PUBLIC_URL=https://git.example.com
+GITEA_ADMIN_USER=<your admin login>                          # owner of the token below
+GITEA_ADMIN_TOKEN=<token with write:admin,write:organization,write:repository,write:user>   # Settings -> Applications on your Gitea
+GITEA_CA_FILE=/usr/local/share/ca-certificates/<your-ca>.crt # private CA only; blank for a public certificate
+TEAM_CI_LABEL=ci                                             # the runs-on label your runner registered
+TEAM_HUMAN_USER=<your login>                                 # existing account: becomes org owner and may merge
+TEAM_DINESH_GITEA_TOKEN= TEAM_GILFOYLE_GITEA_TOKEN= TEAM_JARED_GITEA_TOKEN=   # blank: tokens are per instance, the bootstrap mints new ones
+```
+
+Then `make up && make team-bootstrap` (twice is fine; it prints what it created). Re-run `make team-bootstrap` after the agents create repositories: it protects every repo in the org, so a repo where Dinesh skipped the protection step is fixed deterministically. Prerequisites: this host trusts your instance's certificate (for a private CA, install its root in the OS store; `GITEA_CA_FILE` is what the agent containers get), and your runner's job image has `git`, `python3` and `venv` (the generated workflow installs into a venv because Debian images refuse system pip installs). What lands on your instance: three machine users (`dinesh`, `gilfoyle`, `jared`), a private org `TEAM_GITEA_ORG` with an `agents` team (write, may create repos), the fixture `demo-calc` with its workflow, and branch protection on `main` (required check, one approval, merge restricted to the admin and you). The admin token stays on this host in `.env`; delete it on your Gitea when you no longer need to re-run the bootstrap. To revoke the agents, delete their three tokens there. Inside a CI job your Gitea is reached through your runner's internal URL, which the workflow gets from the runner, so nothing in the template names your host. Keep a copy of each mode's env (`.env.bundled`, `.env.forge`; gitignored) to switch back and forth.
+
+One thing to record in your instance's own decision log: on a pull_request event the runner executes the workflow file from the PR branch before anyone reviews it, so an agent can change CI in its own PR. Your runner's isolation is what bounds that.
+
 **Limits, honestly.**
 
 - The reply guard (`BUZZ_AGENT_REQUIRE_REPLY=1`, at most two rerolls) is advisory: a turn can still end in text nobody sees. Re-mention once before calling it a failure.
@@ -313,6 +330,7 @@ Measured 2026-09-13: `ornith-max`, `qwen3.8-max` and `laguna-max` publish multi-
 - No NIP-OA owner attestation for these server-side agents; no CLI mints it. The allowlist is the access control.
 - Gitea repositories cannot be attached as Projects in the Buzz desktop app (it only attaches relay-hosted repos), so the PR link is the hand-off, not an in-app view.
 - The bundled Gitea is its own database: your account there is the one `make team-bootstrap` creates, and an account on some other Gitea you run does not exist here (nor do the agents there). Pointing the team at an external Gitea is not supported: the bootstrap drives the Gitea CLI through `docker compose exec`, the runner would need that instance's trust and CA, and the agents would be creating orgs and repos on it.
+- Never point the bundled `gitea-runner` at an external Gitea: it mounts the host docker socket and runs on the host network. External mode drops that profile and uses your instance's own runner.
 - The runner mounts `/var/run/docker.sock`: CI jobs are sibling containers with the same trust boundary as your own `docker` command. Only run workflows you would run by hand.
 
 ## Security notes

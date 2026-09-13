@@ -1,5 +1,8 @@
 examples/
 .env
+# alternate env copies, e.g. .env.bundled / .env.forge (make down before swapping)
+.env.*
+!.env.example
 proxy/config.yaml
 docker-compose.override.yml
 models/

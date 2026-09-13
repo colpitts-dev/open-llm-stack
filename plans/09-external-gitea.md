@@ -285,9 +285,129 @@ make test                                  # gitea section against the forge, no
 
 If `make team-bootstrap` fails at "not an admin token": the pasted token lacks `write:admin`. If agents log TLS errors: `GITEA_CA_FILE` path wrong (the entrypoint prints `private CA loaded` only when the mounted file is non-empty). If CI never starts on the forge: `TEAM_CI_LABEL` must be `ci`, and the fixture workflow's `runs-on` must show it (`git show main:.gitea/workflows/ci.yaml`). If the venv step fails on `gitea-ci`: record the error; fallback `uv venv .venv && uv pip install -e . pytest`.
 
-## 7. Execution report (fill in)
+## 7. Execution report (executed 2026-09-13: bundled phase, then the cutover to the operator's own Gitea)
 
-- Findings and fixes:
-- Gate output (G0 both modes, bundled `make test`, G16, G17, `make test` external):
-- Timings (bootstrap, PR opened after, CI on `ci` runner, review after):
-- Not run and why:
+### Findings and fixes (bundled phase)
+
+1. The `/admin/actions/runners` response carries `status` (`online`/`offline`) and `labels[].name`; the bootstrap's warning now requires an **online** runner with the label (the bundled instance still listed an offline `runner-probe` from plan 08 probing, deleted via `DELETE /admin/actions/runners/{id}`).
+2. `scripts/smoke-test.sh` calls `/api/v1/version` with the token (a sign-in-required forge answers 403 anonymously); `/api/healthz` stays anonymous. The probe repo is created in the org; a 404 (org not bootstrapped yet) skips the probe instead of failing, so a bundled install without the team profile still passes.
+3. `.gitignore`: `.env.*` (with `!.env.example`) so `.env.bundled` / `.env.forge` copies can never be committed; the first attempt put a comment on the pattern line, which gitignore treats as part of the pattern.
+4. Mid-run, every container of this stack except LiteLLM was stopped and removed by a **second Claude Code session** working in the forge's deployment repo on the same Docker daemon (its scratch smoke stack started at the same second). Volumes were intact; `make up` restored the stack; the regression was re-run from the start. Not a defect of this plan; recorded so the next executor checks for concurrent sessions before blaming the scripts.
+
+### Gate output
+
+```
+$ bash -n scripts/*.sh && docker compose config --quiet && echo "G0 bundled ok"
+scripts parse / G0 bundled ok
+$ GITEA_CA_FILE=/usr/local/share/ca-certificates/<forge-ca>.crt COMPOSE_PROFILES=litellm,openwebui,buzz,buzz-agent,team docker compose config --quiet && echo "G0 external ok"
+G0 external ok            (renders source: <the CA file>, target: /opt/team/ca.crt, read_only: true)
+G0 ok: gitea-runner / team / litellm,openwebui,buzz,gitea,buzz-agent,gitea-runner,team,ollama,llamacpp
+$ COMPOSE_PROFILES=team docker compose config | grep -E 'ca.crt|TEAM_CI_LABEL' | sort | uniq -c
+      1     - /dev/null:/opt/team/ca.crt:ro   /   4  target: /opt/team/ca.crt   /   4  TEAM_CI_LABEL: python
+
+$ make gitea-bootstrap        # bundled
+admin user stackadmin already exists
+GITEA_ADMIN_TOKEN lacks write:admin -- re-minted with write:admin; delete the old token in Gitea
+GITEA_ADMIN_TOKEN written to .env
+$ make gitea-bootstrap
+GITEA_ADMIN_TOKEN already set and admin-scoped (pass --rotate to mint a new one)
+
+$ make team-bootstrap && make team-bootstrap        # API-only path, bundled
+gitea user dinesh exists / gilfoyle exists / jared exists / richard exists / org piedpiper exists / team piedpiper/agents exists /
+team member dinesh|gilfoyle|jared / org owner richard / piedpiper/demo-calc exists / branch protection on main exists / team bootstrap complete   (identical on run 2)
+# new CI template pushed to demo-calc main (protection dropped and recreated by the bootstrap):
+branch protection on main: CI check + 1 approval, merge by richard,stackadmin only
+push run on bundled runner: completed/success
+
+# agents recreated: bundled = no CA
+model=ornith-max context=237568 output=16384 / presence set to online
+crw-rw-rw- 1 root root 1, 3 /opt/team/ca.crt   CURL_CA_BUNDLE=[]        (device file, 0 bytes -> variables not set)
+Dinesh's prompt: runs-on: python                                         ($TEAM_CI_LABEL inlined)
+
+# G15 -- full bundled regression, make test (15:53:10Z -> 15:55:32Z)
+litellm: 5 models, 4x chat OK, embeddings 1024 / open-webui: healthy, chat OK / buzz: readiness 200, NIP-11, community ok, web UI, CLI /
+gitea: healthz pass, version 1.27.3, user stackadmin admin=true, created piedpiper/smoke-1789314861 -> cloned -> deleted /
+buzz-agent: agent replied after ~10s: PONG / gitea-runner: registered, run completed/success main /
+team: PR #10 opened after ~20s, CI on PR #10: success, Gilfoyle review: APPROVED, TEAM SMOKE PASS / smoke test finished
+
+# G15 -- new-project job on the bundled instance ("create a repository named wordcount-968 ... a pytest test, CI, and open a pull request")
+wordcount-968 PR: 1 after ~50s
+PR workflow: runs-on: python (rewritten by Dinesh) + the venv install line
+wordcount-968 CI: success
+branch protection set by Dinesh: merge_whitelist_usernames ["richard","stackadmin"], status_check_contexts ["ci / test (pull_request)"]
+```
+
+### Findings and fixes (external phase)
+
+5. **Machine-user email.** `POST /admin/users` with `dinesh@localhost` → `422 {"message":"[Email]: Email"}` on the forge (the bundled CLI had accepted it). The bootstrap now uses `<user>@agents.invalid` (RFC 2606; `send_notify` false).
+6. **The CA must be file-based for the shell tool.** `private CA loaded` was printed and the harness had the env vars, but the agent's shell tool runs with a scrubbed environment (plan 08 finding 3), so its `curl`/`git` still failed TLS. The entrypoint now also sets `git config --global http.sslCAInfo` and writes `~/.curlrc` (`cacert = …`). Verified from a scrubbed shell inside `dinesh` (`env -i HOME=… PATH=…`): `/api/v1/user` → `"login":"dinesh"`, `git ls-remote` over HTTPS through the credential store.
+7. **Agent workspaces outlived the switch.** The first forge smoke opened PR #1 from Dinesh's bundled clone of `demo-calc`: the branch carried the bundled workflow (`runs-on: python`), and its runs sat in `queued` for minutes while `GET /admin/actions/runners` showed the forge's runner `online`, not `busy`. The entrypoint now deletes every `REPOS/*` clone whose `origin` is not under `GITEA_URL` at start (logged `removing stale clone …`; four in Dinesh's volume, two in Gilfoyle's), and Dinesh's persona says to re-clone rather than push another host's history. PR #1 was closed and its branch deleted by hand.
+
+8. **Branch protection on repos the agents create cannot depend on the model.** In the forge new-project run Dinesh created `piedpiper/greeter-787` with `runs-on: ci` and green CI but skipped the protection step (he had applied it in the bundled run). `scripts/bootstrap-team.sh` now applies/repairs protection on **every** repo in the org, so `make team-bootstrap` is the deterministic backstop; README says to re-run it after the agents create repos.
+
+9. **Transient apk DNS error + the smoke read the combined status.** In the post-cutover bundled re-validation, the push-event job failed at `apk add git` ("DNS: transient error") while the host's Docker networks were being torn down and recreated by the mode switch; the pull_request run was still pending, but `GET /commits/{sha}/status` `.state` turns `failure` as soon as any context fails, so `team-smoke.sh` declared "CI not green". Fixes: `agents/ci-python.yaml` retries `apk add` up to five times; `scripts/team-smoke.sh` reads the `ci / test (pull_request)` context, the one branch protection requires. Bundled team smoke after the fix: `PR #13 opened after ~20s / CI on PR #13: success / Gilfoyle review: APPROVED / TEAM SMOKE PASS` (16:34Z); forge team smoke with the fixed script: see the end of the gate output.
+
+### Gate output (external phase; forge = the operator's Gitea 1.27.3 behind Caddy with a private CA)
+
+```
+$ # .env: profiles litellm,openwebui,buzz,buzz-agent,team; GITEA_PUBLIC_URL=https://<forge>; GITEA_ADMIN_USER=<admin>; GITEA_CA_FILE=<root CA>;
+$ # TEAM_CI_LABEL=ci; TEAM_HUMAN_USER=<admin>; agent tokens blanked. Bundled copy kept as .env.bundled (gitignored).
+$ curl -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_ADMIN_TOKEN" $GITEA_PUBLIC_URL/api/v1/admin/users?limit=1   → 200 (owner is_admin=true)
+$ docker compose down gitea gitea-runner && make up
+(agents restart until the bootstrap mints their tokens: "no Gitea token for dinesh -- run make team-bootstrap" -- the plan 08 guard, as designed)
+
+# G16
+$ make team-bootstrap
+created gitea user dinesh / TEAM_DINESH_GITEA_TOKEN written / … gilfoyle … jared … / gitea user <admin> exists / created org piedpiper /
+created team piedpiper/agents / team member dinesh|gilfoyle|jared / org owner <admin> / created piedpiper/demo-calc with CI workflow (runs-on: ci) /
+branch protection on main: CI check + 1 approval, merge by <admin> only / team bootstrap complete
+$ make team-bootstrap            # second run: only exists/member/owner lines, then "team bootstrap complete"
+$ for a in dinesh gilfoyle jared erlich; do docker compose logs $a | …; done
+private CA loaded for https://<forge> / model=ornith-max context=237568 output=16384 / presence set to online   (x4)
+$ docker compose exec -T dinesh sh -c 'env -i HOME=/home/agent PATH=… bash -c ". ~/.gitea.env && curl -sS -H … $GITEA_URL/api/v1/user; git ls-remote --heads …"'
+"login":"dinesh"
+ls-remote head sha: 5fee5e3f…
+$ docker compose exec -T dinesh sed -E 's/:[^:@]*@/:<t>@/' /home/agent/.git-credentials
+https://dinesh:<t>@<forge>
+$ …/repos/piedpiper/demo-calc/actions/runs | jq '.workflow_runs[0]'
+demo-calc main push on the forge's ci runner: completed/success       (job log: "1 passed in 0.01s", "Job succeeded"; venv step ran on the Debian job image)
+
+# G17 (after finding 7; run 1 was the stale-clone PR)
+$ make team-smoke                 (16:22:31Z -> 16:23:17Z)
+PR #2 opened after ~20s
+CI on PR #2: success              (contexts: ci / test (pull_request) success, ci / test (push) success)
+Gilfoyle review: APPROVED         (official=true)
+TEAM SMOKE PASS: PR #2, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+$ curl -X POST -H "Authorization: token $TEAM_GILFOYLE_GITEA_TOKEN" …/pulls/2/merge -d '{"Do":"merge"}'
+{"message":"User not allowed to merge PR"} HTTP 405            PR stays open, merged=false
+
+# make test, external mode (16:24:xxZ -> 16:26:00Z)
+litellm / open-webui / buzz sections as in bundled mode /
+gitea: healthz pass, version 1.27.3, user <admin> admin=true, created piedpiper/smoke-1789316688 (https clone URL) -> cloned -> deleted /
+(no gitea-runner section: profile off) / buzz-agent: PONG after ~10s /
+team: PR #3 opened after ~20s, CI on PR #3: success, Gilfoyle review: APPROVED, TEAM SMOKE PASS / smoke test finished
+
+# new-project request on the forge ("create a repository named greeter-787 … a pytest test, CI, and open a pull request")
+greeter-787 PR: 1 after ~40s / PR workflow runs-on: ci / greeter-787 CI on the forge: success / repo private=true
+branch protection: none until `make team-bootstrap` (finding 8) → "greeter-787: branch protection on main: CI check + 1 approval, merge by <admin> only"
+
+# forge team smoke with the final scripts (16:35Z)
+PR #4 opened after ~120s
+CI on PR #4: success
+Gilfoyle review: APPROVED
+TEAM SMOKE PASS: PR #4, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+```
+
+### Timings (external, ornith-max)
+
+`make team-bootstrap` first run ~15 s (three users, tokens, org, team, fixture push), second run ~8 s; team smoke 46 s wall clock (PR 20 s after the mention, CI on the forge's runner ~10 s, review ~15 s after the request); `make test` external 1 min 40 s.
+
+### Timings (bundled)
+
+`make gitea-bootstrap` < 5 s; `make team-bootstrap` ~10 s per run; team smoke 2 min 22 s wall clock inside `make test`; new-project job: PR after ~50 s, CI ~25 s.
+
+### Not run and why
+
+- Merging PRs #2 and #3 on the forge: the operator's, on purpose (merge whitelist = the admin; agents are refused).
+- Deleting the forge admin token: operator's call; it is only needed to re-run `make team-bootstrap` there.
+- An ADR in the forge's own deployment repo about machine users and PR-branch workflows: recommended, not part of this repo.

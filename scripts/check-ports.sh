@@ -3,7 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env ] && set -a && . ./.env && set +a
-ports=("${LITELLM_PORT:-3000}" "${OPENWEBUI_PORT:-3001}" "${BUZZ_PORT:-3002}" "${GITEA_PORT:-3003}")
+has_profile() { [[ ",${COMPOSE_PROFILES:-}," == *",$1,"* ]]; }
+# Only the ports of layers that will actually run: with the gitea profile off, 3003 may legitimately belong to something else.
+ports=()
+has_profile litellm   && ports+=("${LITELLM_PORT:-3000}")
+has_profile openwebui && ports+=("${OPENWEBUI_PORT:-3001}")
+has_profile buzz      && ports+=("${BUZZ_PORT:-3002}")
+has_profile gitea     && ports+=("${GITEA_PORT:-3003}")
+[ ${#ports[@]} -gt 0 ] || { echo "ports ok (no port-publishing profile enabled)"; exit 0; }
 ours=$(docker ps --filter label=com.docker.compose.project=open-llm-stack --format '{{.Ports}}' 2>/dev/null || true)
 rc=0
 for p in "${ports[@]}"; do

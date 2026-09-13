@@ -22,7 +22,8 @@ pr=""; for i in $(seq 1 90); do sleep 10; pr=$(curl -fsS -H "$A" "$B/repos/$OWNE
 [ -n "$pr" ] || { echo "FAIL: no PR from dinesh within 15 min; see docker compose logs dinesh" >&2; exit 1; }
 echo "PR #$pr opened after ~$((i*10))s"
 sha=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/pulls/$pr" | jq -r .head.sha)
-st=""; for i in $(seq 1 60); do sleep 10; st=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/commits/$sha/status" | jq -r .state); [ "$st" = "success" ] || [ "$st" = "failure" ] && break; done
+# read the ci / test (pull_request) context itself: the combined .state turns failure as soon as ANY context fails, e.g. the push-event run
+st=""; for i in $(seq 1 60); do sleep 10; st=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/commits/$sha/status" | jq -r '[.statuses[] | select(.context=="ci / test (pull_request)") | .status][0] // "pending"'); [ "$st" = "success" ] || [ "$st" = "failure" ] && break; done
 echo "CI on PR #$pr: $st"; [ "$st" = "success" ] || { echo "FAIL: CI not green" >&2; exit 1; }
 url=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/pulls/$pr" | jq -r .html_url)
 bz messages send --channel "$ch" --mention "$TEAM_GILFOYLE_PUBKEY" --content "@Gilfoyle review please $url" >/dev/null

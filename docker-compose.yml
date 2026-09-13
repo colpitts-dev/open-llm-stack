@@ -30,6 +30,7 @@ x-team-agent: &team-agent
   volumes:
     - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
     - ./agents:/opt/team/agents:ro
+    - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
   environment: &team-env
     BUZZ_RELAY_URL: ${BUZZ_RELAY_URL:-ws://127.0.0.1:3002}
     BUZZ_ACP_AGENT_COMMAND: buzz-agent
@@ -55,6 +56,7 @@ x-team-agent: &team-agent
     GITEA_OWNER: ${TEAM_GITEA_ORG:-piedpiper}   # org, not the admin user: a non-admin cannot create repos in another user's namespace
     GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}    # with GITEA_HUMAN, the only users who may merge (branch-protection merge whitelist)
     GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
+    TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
     RUST_LOG: info
   healthcheck:
     test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
@@ -341,6 +343,7 @@ services:
       start_period: 150s   # covers the relay-wait loop above
 
   # ---------------------------------------------------------------- profile: gitea-runner (Laurie)
+  # bundled mode only: this runner mounts the host docker socket -- never point GITEA_INSTANCE_URL at a production Gitea
   gitea-runner:
     image: docker.gitea.com/act_runner:3.4.2   # verified 2026-09-13; binary gitea-runner v3.4.2
     profiles: [gitea-runner]
@@ -370,6 +373,7 @@ services:
       - team-dinesh:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
       - ./agents:/opt/team/agents:ro
+      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
       <<: *team-env
       TEAM_ROLE: dinesh
@@ -385,6 +389,7 @@ services:
       - team-gilfoyle:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
       - ./agents:/opt/team/agents:ro
+      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
       <<: *team-env
       TEAM_ROLE: gilfoyle
@@ -400,6 +405,7 @@ services:
       - team-jared:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
       - ./agents:/opt/team/agents:ro
+      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
       <<: *team-env
       TEAM_ROLE: jared
@@ -417,6 +423,7 @@ services:
       - team-erlich:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
       - ./agents:/opt/team/agents:ro
+      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
       <<: *team-env
       TEAM_ROLE: erlich

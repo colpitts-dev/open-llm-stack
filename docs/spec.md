@@ -140,18 +140,27 @@ BUZZ_AGENT_INSTRUCTIONS='Your text output is NOT delivered to anyone; humans onl
 
 # --- Gitea (profile: gitea) -----------------------------------------------------------------
 GITEA_PORT=3003
-GITEA_PUBLIC_URL=http://127.0.0.1:3003   # ROOT_URL: what clone URLs and links show. Keep the port in sync.
+# Bundled: the loopback ROOT_URL (keep the port in sync). External: https://git.example.com -- and drop gitea AND gitea-runner
+# from COMPOSE_PROFILES (the bundled runner must never register against a production instance).
+GITEA_PUBLIC_URL=http://127.0.0.1:3003
+# Bundled: created by make gitea-bootstrap. External: the account that owns GITEA_ADMIN_TOKEN (an admin there).
 GITEA_ADMIN_USER=stackadmin
-# make init: 24 hex
+# make init: 24 hex (bundled only)
 GITEA_ADMIN_PASSWORD=
-# written by `make gitea-bootstrap`
+# Bundled: written by make gitea-bootstrap. External: paste a token of GITEA_ADMIN_USER with scopes
+#   write:admin,write:organization,write:repository,write:user  (agents never see it; delete/rotate it in Gitea at will)
 GITEA_ADMIN_TOKEN=
+# Root CA of a Gitea behind a private CA, mounted read-only into the team agents. Blank = system trust store.
+# External example: /usr/local/share/ca-certificates/<forge-ca>.crt  (the same file your OS trust store got from the forge's docs)
+GITEA_CA_FILE=
 
 # --- Agent team (profile: team) — Dinesh (builder), Gilfoyle (reviewer), Jared (coordinator), Erlich (assistant)
 # One model for the whole team; must be a model_name in proxy/config.yaml. Switch with `make team-model M=qwen3.8-max`.
 # Measured 2026-09-13: ornith-max, qwen3.8-max and laguna-max publish multi-step results; qwen3.6-max does not.
 # Gitea organization that owns every team repository; agents can create repositories in it (make team-bootstrap creates it)
 TEAM_GITEA_ORG=piedpiper
+# runs-on label for the CI workflows the team generates: python = the bundled gitea-runner profile; ci = the forge's runner
+TEAM_CI_LABEL=python
 # Your own (non-admin) Gitea login on the bundled instance: org owner, and the only user besides the admin who may merge
 TEAM_HUMAN_USER=richard
 # make init: 24 hex
@@ -217,7 +226,7 @@ Every service joins it. Containers address each other by service name (`litellm`
 | `buzz` | `buzz`, `buzz-db`, `buzz-redis`, `buzz-minio`, `buzz-minio-init` |
 | `gitea` | `gitea` |
 | `buzz-agent` | `buzz-agent` |
-| `gitea-runner` | `gitea-runner` |
+| `gitea-runner` | `gitea-runner` (bundled mode only: mounts the host docker socket; never registered against an external Gitea) |
 | `team` | `dinesh`, `gilfoyle`, `jared`, `erlich` |
 | `ollama` | `ollama` |
 | `llamacpp` | `llamacpp` |
@@ -364,6 +373,23 @@ Profiles `gitea-runner` (service `gitea-runner`, "Laurie") and `team` (services 
 
 ---
 
+### 5.10 External Gitea (plan 09; verified 2026-09-13)
+
+The team works against **either** the bundled Gitea or one you already run, selected by `.env` alone. Verified read-only against an operator's own Gitea 1.27.3 behind Caddy with a private CA ("the forge"), and live on the bundled instance.
+
+- **Mode switch.** Bundled: `GITEA_PUBLIC_URL=http://127.0.0.1:3003`, token from `make gitea-bootstrap`, `GITEA_CA_FILE` blank, `TEAM_CI_LABEL=python`, profiles `gitea,gitea-runner,team`. External: `https://…`, a pasted admin token (`write:admin,write:organization,write:repository,write:user`), `GITEA_CA_FILE` = the forge's root CA (blank for a public certificate), `TEAM_CI_LABEL` = that instance's runner label, profile `team` only. `make gitea-bootstrap` exits 0 with a hint when the `gitea` profile is off.
+- **One API-only bootstrap.** `scripts/bootstrap-team.sh` never calls the Gitea CLI except for the bundled runner token: users via `POST /admin/users` (needs `write:admin`; `GET /admin/users?limit=1` is the scope probe, 403 without it), agent tokens minted by each agent **with its own password** through `POST /users/{u}/tokens` (basic auth; verified: no admin involved), org/team/fixture/protection as in §5.8. `make gitea-bootstrap` re-mints a bundled admin token that predates `write:admin` (probe → re-mint).
+- **Private CA in the agents.** The sprig image runs as uid 1000 and cannot install a CA (`update-ca-certificates` needs root). `GITEA_CA_FILE` is bind-mounted read-only at `/opt/team/ca.crt` (`/dev/null` when blank, which renders as a 0-byte device file). When that file is non-empty the entrypoint exports `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `SSL_CERT_FILE` for the harness **and** writes `git config --global http.sslCAInfo` plus `~/.curlrc` (`cacert = …`), because the agent's shell tool runs with a scrubbed environment (§5.8) and only file-based settings under `HOME` reach it. Verified from a scrubbed shell inside `dinesh`: token call to `/api/v1/user` → own login, `git ls-remote` over HTTPS through the credential store. An empty value makes curl and git fail, hence no exports when the file is empty. Verified from the agent image: curl 200 and `git ls-remote` through TLS with those variables. Compose `${VAR:+x}` is deliberately not used for the same reason. Host-side scripts use the host's own trust store (install the forge's root CA there first).
+- **CI on the forge.** Its runner label is whatever it registered (`ci` on the reference forge, one global runner, capacity 2, Debian job image with git/curl/jq/python3/pip/venv and no pytest, 2 CPU / 4 GB, no bind mounts). Jobs there reach Gitea through an internal hostname (`http://gitea:3000` via add-host), never the public HTTPS name, so `agents/ci-python.yaml` clones from `GITHUB_SERVER_URL` (= `ROOT_URL` in bundled mode, the internal URL in a forge job) and installs into a venv (Debian pip refuses system installs, PEP 668; verified on `python:3.12-alpine` too). `TEAM_CI_LABEL` is written into `runs-on` by the bootstrap (fixture repo) and by Dinesh (repos he creates; `$TEAM_CI_LABEL` is inlined into his prompt). `GET /admin/actions/runners` lists global runners with `status` and `labels`; the bootstrap warns when no online runner carries the label (org-level `GET /orgs/{org}/actions/runners` does not list global runners).
+- **Workspaces outlive an instance switch.** Each agent volume keeps `REPOS/<repo>` clones. After switching instances, Dinesh based new work on the bundled clone of `demo-calc` and pushed it to the forge, so the PR branch carried the bundled workflow (`runs-on: python`) and its jobs queued forever on an instance that has only a `ci` runner (verified 2026-09-13). The entrypoint now removes every clone whose `origin` is not under `GITEA_URL` at start (`removing stale clone <name>` in the logs; bodies are disposable, finished work lives in PRs), and Dinesh's persona says to re-clone rather than push history from another host. Symptom to recognise: runs stuck in `queued` with `started_at` at the epoch while `GET /admin/actions/runners` shows the runner `online` and not `busy`.
+- **Protection is re-applied by the bootstrap, not trusted to the model.** A new-project run on the forge produced a correct repo, label and green CI but no branch protection (Dinesh skipped the step he had performed in bundled mode). `make team-bootstrap` therefore protects every repo in the org (create or repair the merge whitelist), idempotently; re-run it after the agents create repositories.
+- **Status contexts.** The combined commit status (`GET /repos/{o}/{r}/commits/{sha}/status` `.state`) becomes `failure` as soon as any context fails, including the push-event run, which is not what protection checks. The smoke and any automation must read the `ci / test (pull_request)` context itself. The Alpine job image installs git per job; a transient DNS error was observed during Docker network churn, so the template retries `apk add`.
+- **Machine-user email.** The API validates email syntax: `dinesh@localhost` is rejected with `422 [Email]: Email` (the bundled CLI accepted it). The bootstrap uses `<user>@agents.invalid` (RFC 2606 reserved; no mail is ever sent).
+- **Forge facts that matter to agents:** sign-in required for every API call (anonymous `/api/v1/version` → 403, so the smoke sends the token; `/api/healthz` stays anonymous), `[api] MAX_RESPONSE_ITEMS` default 50 (paginate), `DEFAULT_PRIVATE=private`, push-to-create off, registration off. On a `pull_request` event the runner executes the workflow file **from the PR branch**, before review: an agent can change CI in its own PR. The forge's job containment bounds that; record it in the forge's own decision log.
+- **Never** register the bundled `gitea-runner` against an external instance (host docker socket, host network). `scripts/check-ports.sh` checks only the ports of enabled profiles, so a foreign 3003 listener does not block `make up` when the bundled Gitea is off.
+- **Switching back:** keep `.env.bundled` / `.env.forge` copies (gitignored by `.env.*`); `make down`, copy over `.env`, `make up`, `make team-bootstrap`. Agent tokens are per instance and are blanked on a switch; the data volumes of the bundled Gitea are never touched.
+- Execution results (G16/G17): see `plans/09-external-gitea.md` §7.
+
 ## 6. Model registry sample (`proxy/config.yaml.example`)
 
 Registers the operator's tuned `*-max` tags and `embed` (validated in the reference project on the same host), with the other locally present tags as commented entries. Numbers follow the reserve formula; the physical window is an operator declaration, never queried.
@@ -399,3 +425,6 @@ Every entry carries `execution_locus: local` and a `model_revision` string, so d
 | G12 | Team job loop | `scripts/team-smoke.sh` (also `make test` with profile `team`): job thread → new PR by `dinesh` in `${TEAM_GITEA_ORG}/demo-calc` → `ci / test (pull_request)` = `success` → non-`PENDING` review by `gilfoyle` → `TEAM SMOKE PASS` (measured 96 s) |
 | G13 | GPU stays on GPU under team load | during/after G12, `docker exec ollama ollama ps` shows the team model at `100% GPU` |
 | G14 | One-variable model switch | `make team-model M=qwen3.8-max` → each agent logs `model=qwen3.8-max context=106496 output=16384` and answers a mention; `make team-model M=nope-model` prints `not registered` and `make` exits 2 (the recipe exits 1) |
+| G15 | Bundled regression after the API-only rewrite | `make gitea-bootstrap` (re-mint), `make team-bootstrap` twice, full `make test` in bundled mode, new-project job with `runs-on` rewrite |
+| G16 | External bootstrap idempotent, agents authenticate over TLS | `make team-bootstrap` twice against the forge; `docker compose exec dinesh` curl `$GITEA_URL/api/v1/user` → own login; `.git-credentials` carries `https://` |
+| G17 | Team loop on the forge | `make team-smoke` → PR on `<org>/demo-calc` at the forge, `ci / test (pull_request)` success on its runner, Gilfoyle `APPROVED`, merge refused for agents |

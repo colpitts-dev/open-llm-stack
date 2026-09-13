@@ -76,26 +76,31 @@ test_buzz() {
 }
 
 test_gitea() {
-  local base="http://${BIND_HOST}:${GITEA_PORT:-3003}"
+  # Bundled or external: GITEA_PUBLIC_URL is what the host and the agents use; the loopback fallback is the bundled default.
+  local base="${GITEA_PUBLIC_URL:-http://${BIND_HOST}:${GITEA_PORT:-3003}}" org="${TEAM_GITEA_ORG:-piedpiper}"
   echo "--- gitea: health + version"
   curl -fsS "$base/api/healthz" | jq -r '"healthz: \(.status)"'
-  curl -fsS "$base/api/v1/version" | jq -r '"version \(.version)"'
   [ -n "${GITEA_ADMIN_TOKEN:-}" ] || { echo "(GITEA_ADMIN_TOKEN blank -- run make gitea-bootstrap for the API checks)"; return 0; }
   local auth="Authorization: token ${GITEA_ADMIN_TOKEN}"
+  curl -fsS -H "$auth" "$base/api/v1/version" | jq -r '"version \(.version)"'   # an external instance may require sign-in even for /version
   echo "--- gitea: token works"
   curl -fsS -H "$auth" "$base/api/v1/user" | jq -r '"user \(.login) admin=\(.is_admin)"'
-  echo "--- gitea: create + clone + delete a private repo"
-  local repo="smoke-$(date +%s)"
-  curl -fsS -H "$auth" -H 'Content-Type: application/json' -d "{\"name\":\"$repo\",\"private\":true,\"auto_init\":true}" \
-    "$base/api/v1/user/repos" | jq -r '"created \(.full_name) private=\(.private) clone=\(.clone_url)"'
+  echo "--- gitea: create + clone + delete a private repo in org $org"
+  local repo="smoke-$(date +%s)" out code
+  # The probe lives in the team org, never in a human's namespace. The org exists only after make team-bootstrap.
+  out=$(curl -sS -w '\n%{http_code}' -H "$auth" -H 'Content-Type: application/json' -d "{\"name\":\"$repo\",\"private\":true,\"auto_init\":true}" \
+    "$base/api/v1/orgs/$org/repos"); code=$(tail -1 <<<"$out")
+  if [ "$code" = 404 ]; then echo "(org $org missing -- run make team-bootstrap; skipping repo probe)"; return 0; fi
+  [ "$code" = 201 ] || fail "repo create in org $org returned HTTP $code: $(head -1 <<<"$out")"
+  head -1 <<<"$out" | jq -r '"created \(.full_name) private=\(.private) clone=\(.clone_url)"'
   local tmp; tmp=$(mktemp -d)
-  git -c http.extraHeader="$auth" clone -q "$base/${GITEA_ADMIN_USER}/${repo}.git" "$tmp/repo" && echo "cloned ($(ls "$tmp/repo" | tr '\n' ' '))"
+  git -c http.extraHeader="$auth" clone -q "$base/$org/${repo}.git" "$tmp/repo" && echo "cloned ($(ls "$tmp/repo" | tr '\n' ' '))"
   rm -rf "$tmp"
-  curl -fsS -X DELETE -H "$auth" "$base/api/v1/repos/${GITEA_ADMIN_USER}/${repo}" && echo "deleted $repo"
+  curl -fsS -X DELETE -H "$auth" "$base/api/v1/repos/$org/${repo}" && echo "deleted $repo"
 }
 
 test_gitea_runner() {
-  local base="http://${BIND_HOST}:${GITEA_PORT:-3003}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}"
+  local base="${GITEA_PUBLIC_URL:-http://${BIND_HOST}:${GITEA_PORT:-3003}}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}"
   echo "--- gitea-runner: registered + last CI run on demo-calc"
   docker compose exec -T gitea-runner sh -c 'test -s /data/.runner && echo registered'
   curl -fsS -H "$auth" "$base/repos/${TEAM_GITEA_ORG:-piedpiper}/demo-calc/actions/runs" | jq -r '.workflow_runs[0] | "run \(.status)/\(.conclusion // "-") \(.head_branch)"'
@@ -105,7 +110,7 @@ test_gitea_runner() {
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
 has_profile buzz && test_buzz
-has_profile gitea && test_gitea
+{ has_profile gitea || [ -n "${GITEA_ADMIN_TOKEN:-}" ]; } && test_gitea   # external Gitea: no profile, but a token
 has_profile buzz-agent && ./scripts/buzz-smoke.sh
 has_profile gitea-runner && test_gitea_runner
 has_profile team && ./scripts/team-smoke.sh

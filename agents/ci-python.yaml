@@ -1,5 +1,6 @@
-# Gitea Actions workflow for Python repos in the team org. Copied verbatim into <repo>/.gitea/workflows/ci.yaml.
-# Runner label `python` = the gitea-runner profile; jobs run on the host network, so the (loopback) ROOT_URL is reachable.
+# Gitea Actions workflow for Python repos in the team org. Copied verbatim into <repo>/.gitea/workflows/ci.yaml with
+# `runs-on` rewritten to TEAM_CI_LABEL (python = bundled gitea-runner; ci = the forge's runner, image gitea-ci).
+# Jobs clone from GITHUB_SERVER_URL: the loopback ROOT_URL in bundled mode, http://gitea:3000 (add-host) on the forge.
 name: ci
 on: [push, pull_request]
 jobs:
@@ -11,10 +12,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.number }}   # set on pull_request only; GITHUB_REF_NAME is the PR index there, not a branch
         run: |
-          apk add --no-cache git >/dev/null
-          # GITHUB_SERVER_URL = Gitea ROOT_URL (GITEA_PUBLIC_URL), so this works unchanged if the port or host changes
+          # python:alpine has no git; Debian job images do. Retry: a job container on a busy host has seen a transient DNS error here.
+          command -v git >/dev/null || for i in 1 2 3 4 5; do apk add --no-cache git >/dev/null 2>&1 && break; echo "apk retry $i"; sleep 5; done
           git clone -q "$(echo "$GITHUB_SERVER_URL" | sed "s|://|://x-access-token:${GITHUB_TOKEN}@|")/${GITHUB_REPOSITORY}.git" src && cd src
           if [ -n "${PR_NUMBER}" ]; then git fetch -q origin "+refs/pull/${PR_NUMBER}/head" && git checkout -q FETCH_HEAD; else git checkout -q "${GITHUB_REF_NAME}"; fi
           git log -1 --oneline
       - name: test
-        run: cd src && pip install -q -e . pytest && pytest -q
+        run: |
+          cd src && python3 -m venv .venv && . .venv/bin/activate   # Debian job images refuse system pip installs (PEP 668)
+          pip install -q -e . pytest && pytest -q

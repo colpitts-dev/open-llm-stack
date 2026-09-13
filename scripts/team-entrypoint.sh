@@ -9,7 +9,27 @@ url="${BUZZ_RELAY_URL/#ws:/http:}"; url="${url/#wss:/https:}"
 for i in $(seq 1 60); do curl -fsS -o /dev/null "$url/_liveness" && break; echo "waiting for relay at $url"; sleep 2; done
 
 # Workspace layout the base prompt expects (spec: docs/buzz-agents-primer.md §2)
+# Private CA (GITEA_CA_FILE mounted at /opt/team/ca.crt; /dev/null when unset). Empty values would break curl/git, so set only when present.
+if [ -s /opt/team/ca.crt ]; then
+  export CURL_CA_BUNDLE=/opt/team/ca.crt GIT_SSL_CAINFO=/opt/team/ca.crt SSL_CERT_FILE=/opt/team/ca.crt   # for the harness itself
+  # The agent's shell tool runs with a scrubbed environment (HOME and PATH only), so the CA must also be configured
+  # where git and curl look without env vars: git's global config and ~/.curlrc (both under HOME, which survives).
+  git config --global http.sslCAInfo /opt/team/ca.crt
+  printf 'cacert = /opt/team/ca.crt\n' > "$HOME/.curlrc"
+  echo "private CA loaded for $GITEA_URL"
+else
+  git config --global --unset http.sslCAInfo 2>/dev/null || true; rm -f "$HOME/.curlrc"   # a volume that was once external
+fi
+
 mkdir -p "$HOME"/{RESEARCH,PLANS,GUIDES,WORK_LOGS,OUTBOX,REPOS,.scratch}
+# Clones from a different Gitea (the volume outlived an instance switch) must go: an agent would otherwise base new
+# work on a stale checkout and push another instance's history and workflow labels (verified 2026-09-13). Bodies are
+# disposable; anything that matters is in a PR on the instance it came from.
+for d in "$HOME"/REPOS/*/; do
+  [ -d "$d/.git" ] || continue
+  origin=$(git -C "$d" remote get-url origin 2>/dev/null || true)
+  case "$origin" in "${GITEA_URL}/"*) ;; *) echo "removing stale clone $(basename "$d") (origin $origin is not $GITEA_URL)"; rm -rf "$d" ;; esac
+done
 
 # Git identity + Gitea credentials (builder/reviewer/coordinator only). Token never appears in the prompt.
 git config --global user.name "$BUZZ_ACP_DISPLAY_NAME"
@@ -28,7 +48,7 @@ fi
 
 # Prompt = team norms + persona (base prompt is prepended by the harness itself)
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/${TEAM_ROLE}.md"; } > "$HOME/.prompt.md"
-sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
+sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
 
 # Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
 # Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).
