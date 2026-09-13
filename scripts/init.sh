@@ -34,7 +34,7 @@ if blank BUZZ_AGENT_PRIVATE_KEY; then
   set_if_blank BUZZ_AGENT_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
 fi
 
-for who in DINESH GILFOYLE JARED ERLICH SMOKE; do
+for who in DINESH GILFOYLE JARED ERLICH MONICA SMOKE; do
   if blank "TEAM_${who}_PRIVATE_KEY"; then
     out=$(gen_key)
     set_if_blank "TEAM_${who}_PRIVATE_KEY" "$(awk '/Secret key:/{print $3}' <<<"$out")"

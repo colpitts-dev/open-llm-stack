@@ -182,6 +182,8 @@ TEAM_JARED_PRIVATE_KEY=
 TEAM_JARED_PUBKEY=
 TEAM_ERLICH_PRIVATE_KEY=
 TEAM_ERLICH_PUBKEY=
+TEAM_MONICA_PRIVATE_KEY=
+TEAM_MONICA_PUBKEY=
 TEAM_SMOKE_PRIVATE_KEY=
 TEAM_SMOKE_PUBKEY=
 # Gitea accounts for the agents (make team-bootstrap creates them and writes the tokens)
@@ -189,6 +191,7 @@ TEAM_GITEA_PASSWORD=
 TEAM_DINESH_GITEA_TOKEN=
 TEAM_GILFOYLE_GITEA_TOKEN=
 TEAM_JARED_GITEA_TOKEN=
+TEAM_MONICA_GITEA_TOKEN=
 # --- Gitea Actions runner (profile: gitea-runner)
 GITEA_RUNNER_TOKEN=            # make team-bootstrap: `gitea actions generate-runner-token`
 GITEA_RUNNER_NAME=laurie
@@ -395,6 +398,7 @@ The team works against **either** the bundled Gitea or one you already run, sele
 - **Why.** Gitea makes the creator of an org repository a collaborator with **admin** rights (verified: the creating agent could PATCH the protection on his own repo, 200, and not on others, 403). Governance that depends on the model performing persona steps was skipped once (§5.10). Both are closed by a factory command plus self-demotion, and by role teams.
 - **Template repository.** `make team-bootstrap` creates `TEAM_GITEA_ORG/python-template` (private, `template: true`) from `agents/template/` plus `agents/ci-python.yaml` with `runs-on` = `TEAM_CI_LABEL`, protects its `main`, and re-syncs it when the files change (a protected `main` rejects direct pushes even from an admin: `remote: error: Not allowed to push to protected branch main`; the bootstrap drops the rule for the update and the reconcile loop restores it).
 - **The factory** `agents/bin/new-repo <name>` (mounted read-only at `/opt/team/agents/bin/new-repo`, bash, no jq): validates the name, `POST /repos/{org}/python-template/generate` with `git_content`, `labels` and `protected_branch` (the rule is copied at birth, including `block_admin_merge_override`; no Actions run fires on generation, the first PR is the first check), checks the rule while still admin (reading a rule needs admin), then `DELETE /repos/{o}/{r}/collaborators/{self}` (204). Result verified inside `dinesh`: workflow present, rule complete, `collaborators: []`, `permissions {admin:false, push:true}`. Error paths: bad name → exit 2, existing name → exit 1, a non-builder → `generate failed: Given user is not allowed to create repository in organization` (exit 1).
+- **Monica** (added 2026-09-13): a fifth agent, UI designer, on the `builders` team with Dinesh; service `monica`, volume `team-monica`, keys `TEAM_MONICA_*`, persona `agents/monica.md` (condensed from VoltAgent's `ui-designer`, plus the builder PR protocol). Bootstrapped and verified on the forge like the others.
 - **Role teams** replace the single `agents` team (the bootstrap migrates: creates the three, moves members, deletes `agents`): `builders` (Dinesh) code/pulls/issues write, actions/releases read, `can_create_org_repo`; `reviewers` (Gilfoyle) code read, pulls and issues write; `coordinators` (Jared) issues write, code/pulls/actions read. Verified with each agent's token: Gilfoyle branch creation 403, review POST 200; Jared generate 422 (not allowed to create), branch 403, issue create/label/assign 201/200/201, protection PATCH 403; Dinesh generate 201. Nobody but humans is an org owner. `CreateTeamOption.units_map` sets per-unit access; `permission` must still be given (`read`).
 - **Reconcile loop** (bootstrap, every org repo): create or repair the protection rule (required check, one approval, merge whitelist admin + human, `block_admin_merge_override`), and remove any agent left as collaborator. It is the backstop; after the factory it normally prints only `exists`.
 - **Admin token scopes** stay `write:admin,write:organization,write:repository,write:user`: no `write:issue`, so issue probes must use an agent token.

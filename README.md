@@ -255,6 +255,7 @@ Profiles `team` and `gitea-runner` turn the single bundled agent into a small de
 | Agent | Role | Answers in | What it does |
 |---|---|---|---|
 | **Dinesh** | builder | threads | clones from Gitea (or, for a new project, creates the repository in the team org with CI and branch protection), branches `agent/<slug>`, pushes and lets CI run the tests (the image has no Python), opens the PR through the API, posts the URL, @mentions you and asks Gilfoyle for a review; reads the PR's commit status and fixes on the same branch |
+| **Monica** | UI designer | threads | a second builder for user-facing work: layout, styling, states, accessibility; delivers PRs like Dinesh, does not touch game logic or tests; persona condensed from the VoltAgent `ui-designer` subagent |
 | **Gilfoyle** | reviewer | threads | read-only: fetches the PR diff, posts a review in Gitea (approve / request changes / comment) and in the thread. Never edits, never opens PRs |
 | **Jared** | coordinator | channels; heartbeat every `TEAM_HEARTBEAT_SECONDS` (1800) | triages Gitea issues, hands ready work to Dinesh, posts status in a channel named `triage`; never builds or reviews |
 | **Erlich** | assistant | channels | Q&A, summaries, drafting in `#general`; has no Gitea access and points build requests at Dinesh |
@@ -319,7 +320,7 @@ Then `make up && make team-bootstrap` (twice is fine; it prints what it created)
 
 One thing to record in your instance's own decision log: on a pull_request event the runner executes the workflow file from the PR branch before anyone reviews it, so an agent can change CI in its own PR. Your runner's isolation is what bounds that.
 
-**New repositories.** Agents never create repositories by hand. Dinesh runs `/opt/team/agents/bin/new-repo <name>`, which generates the repo from the org's `python-template` (private, CI workflow, protected `main` with the merge whitelist and admin-override blocked) and then removes his own admin rights, so every repo an agent creates is born governed and the agent keeps only the team's write access. The template is built by `make team-bootstrap` from `agents/template/` and `agents/ci-python.yaml`; edit those and re-run the bootstrap to change what new repos look like. Roles are enforced by Gitea teams, not by personas: `builders` (Dinesh) may push and create repos, `reviewers` (Gilfoyle) may only review and comment, `coordinators` (Jared) may only triage issues. `make test` proves the factory without an LLM (`test_team_factory`).
+**New repositories.** Agents never create repositories by hand. Dinesh runs `/opt/team/agents/bin/new-repo <name>`, which generates the repo from the org's `python-template` (private, CI workflow, protected `main` with the merge whitelist and admin-override blocked) and then removes his own admin rights, so every repo an agent creates is born governed and the agent keeps only the team's write access. The template is built by `make team-bootstrap` from `agents/template/` and `agents/ci-python.yaml`; edit those and re-run the bootstrap to change what new repos look like. Roles are enforced by Gitea teams, not by personas: `builders` (Dinesh, Monica) may push and create repos, `reviewers` (Gilfoyle) may only review and comment, `coordinators` (Jared) may only triage issues. `make test` proves the factory without an LLM (`test_team_factory`).
 
 **Limits, honestly.**
 

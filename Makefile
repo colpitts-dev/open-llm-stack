@@ -36,5 +36,5 @@ team-model:      ## switch every team agent's model: make team-model M=qwen3.8-m
 	@test -n "$(M)" || { echo "usage: make team-model M=<model_name from proxy/config.yaml>"; exit 1; }
 	@set -a; . ./.env; set +a; curl -fsS -H "Authorization: Bearer $$LITELLM_MASTER_KEY" "$${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1/models" | jq -e --arg m "$(M)" '.data[] | select(.id==$$m)' >/dev/null || { echo "$(M) is not registered in proxy/config.yaml"; exit 1; }
 	sed -i 's|^TEAM_MODEL=.*|TEAM_MODEL=$(M)|' .env
-	docker compose up -d --force-recreate dinesh gilfoyle jared erlich   # --force-recreate: a plain up -d once skipped the restart after the .env edit
+	docker compose up -d --force-recreate dinesh gilfoyle jared erlich monica   # --force-recreate: a plain up -d once skipped the restart after the .env edit
 	@echo "team now on $(M); each agent re-reads its context window from the registry on start"

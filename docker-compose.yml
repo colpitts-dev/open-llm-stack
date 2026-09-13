@@ -20,6 +20,7 @@ volumes:
   team-gilfoyle:
   team-jared:
   team-erlich:
+  team-monica:
 
 x-team-agent: &team-agent
   image: ghcr.io/block/buzz-sprig:sha-e17cdd9
@@ -43,7 +44,7 @@ x-team-agent: &team-agent
     # The entrypoint checks these at start instead.
     # Humans from TEAM_ALLOWLIST, the smoke identity, and the four teammates: Dinesh asks Gilfoyle for review,
     # Jared briefs Dinesh, Erlich delegates -- without the team pubkeys here those mentions are silently dropped (verified).
-    BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+    BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-}
     BUZZ_ACP_SYSTEM_PROMPT_FILE: /home/agent/.prompt.md   # assembled by the entrypoint from agents/TEAM.md + persona
     BUZZ_AGENT_PROVIDER: openai
     OPENAI_COMPAT_BASE_URL: ${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1
@@ -430,3 +431,19 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Erlich
       BUZZ_PRIVATE_KEY: ${TEAM_ERLICH_PRIVATE_KEY:?run make init}
       BUZZ_ACP_SESSION_POLICY: channel
+
+  monica:
+    <<: *team-agent
+    volumes:
+      - team-monica:/home/agent
+      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./agents:/opt/team/agents:ro
+      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
+    environment:
+      <<: *team-env
+      TEAM_ROLE: monica
+      BUZZ_ACP_DISPLAY_NAME: Monica
+      BUZZ_PRIVATE_KEY: ${TEAM_MONICA_PRIVATE_KEY:?run make init}
+      BUZZ_ACP_SESSION_POLICY: thread
+      GITEA_USER: monica
+      GITEA_TOKEN: ${TEAM_MONICA_GITEA_TOKEN:-}

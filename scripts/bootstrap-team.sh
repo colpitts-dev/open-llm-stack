@@ -30,7 +30,7 @@ ensure_user() {   # ensure_user <name> <password>. Email: the API validates synt
   else api -d "{\"username\":\"$1\",\"email\":\"$1@agents.invalid\",\"password\":\"$2\",\"must_change_password\":false,\"send_notify\":false}" "$B/admin/users" >/dev/null && echo "created gitea user $1"; fi
 }
 SCOPES='["write:repository","write:issue","read:user","write:organization"]'
-for who in dinesh gilfoyle jared; do
+for who in dinesh gilfoyle jared monica; do
   ensure_user "$who" "$TEAM_GITEA_PASSWORD"
   var="TEAM_$(echo "$who" | tr a-z A-Z)_GITEA_TOKEN"
   if blank "$var" || ! has_org_scope "${!var}"; then
@@ -60,7 +60,7 @@ ensure_team() {   # ensure_team <name> <can_create_org_repo> <units_map json> <m
   else echo "team $ORG/$name exists"; fi
   for who in "$@"; do api -o /dev/null -X PUT "$B/teams/$tid/members/$who" && echo "team $name: member $who"; done
 }
-ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' dinesh
+ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' dinesh monica
 ensure_team reviewers    false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' gilfoyle
 ensure_team coordinators false '{"repo.code":"read","repo.pulls":"read","repo.issues":"write","repo.actions":"read"}' jared
 old=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="agents") | .id'); [ -n "$old" ] && api -o /dev/null -X DELETE "$B/teams/$old" && echo "removed legacy team $ORG/agents (write+create for everyone)"
@@ -113,7 +113,7 @@ for r in $(api "$B/orgs/$ORG/repos?limit=50" | jq -r '.[].name'); do
   elif [ "$(api "$B/repos/$ORG/$r/branch_protections/main" | jq -r '[.enable_merge_whitelist, .block_admin_merge_override, (.merge_whitelist_usernames|sort|unique|join(","))] | join(" ")')" != "true true $want" ]; then
     api -o /dev/null -X PATCH -d "{\"enable_merge_whitelist\":true,\"block_admin_merge_override\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"]}" "$B/repos/$ORG/$r/branch_protections/main" && echo "$r: protection repaired (merge by $want, admins cannot override)"
   else echo "$r: branch protection on main exists"; fi
-  for c in $(api "$B/repos/$ORG/$r/collaborators" | jq -r '.[] | select(.login=="dinesh" or .login=="gilfoyle" or .login=="jared") | .login'); do
+  for c in $(api "$B/repos/$ORG/$r/collaborators" | jq -r '.[] | select(.login=="dinesh" or .login=="gilfoyle" or .login=="jared" or .login=="monica") | .login'); do
     api -o /dev/null -X DELETE "$B/repos/$ORG/$r/collaborators/$c" && echo "$r: removed collaborator $c (team write only)"
   done
 done
