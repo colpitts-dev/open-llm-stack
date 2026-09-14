@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -38,3 +38,12 @@ team-model:      ## switch every team agent's model: make team-model M=qwen3.8-m
 	sed -i 's|^TEAM_MODEL=.*|TEAM_MODEL=$(M)|' .env
 	docker compose up -d --force-recreate dinesh gilfoyle jared erlich monica   # --force-recreate: a plain up -d once skipped the restart after the .env edit
 	@echo "team now on $(M); each agent re-reads its context window from the registry on start"
+
+goose-image:     ## build open-llm-stack/goose-agent (plan 12; downloads the pinned goose release, apt-get)
+	docker build -t open-llm-stack/goose-agent:1.50.0 agents/goose
+
+dinesh-runtime:  ## switch Dinesh's runtime: make dinesh-runtime R=goose|buzz-agent (plan 12)
+	@case "$(R)" in goose) img=open-llm-stack/goose-agent:1.50.0 ;; buzz-agent) img=ghcr.io/block/buzz-sprig:sha-e17cdd9 ;; *) echo "usage: make dinesh-runtime R=goose|buzz-agent"; exit 1 ;; esac; \
+	sed -i "s|^TEAM_DINESH_RUNTIME=.*|TEAM_DINESH_RUNTIME=$(R)|; s|^TEAM_DINESH_IMAGE=.*|TEAM_DINESH_IMAGE=$$img|" .env; \
+	grep -qE '^TEAM_DINESH_IMAGE=' .env || echo "TEAM_DINESH_IMAGE=$$img" >> .env; \
+	docker compose up -d --force-recreate --wait dinesh && docker compose logs --since 1m --no-log-prefix dinesh | grep -E 'runtime=|agent initialized|presence set' | cut -c1-120

@@ -64,6 +64,19 @@ echo "model=$OPENAI_COMPAT_MODEL context=$BUZZ_AGENT_MAX_CONTEXT_TOKENS output=$
 
 buzz users set-profile --name "$BUZZ_ACP_DISPLAY_NAME" --about "open-llm-stack team agent (${TEAM_ROLE}), model ${OPENAI_COMPAT_MODEL}" >/dev/null 2>&1 \
   && echo "profile name set: $BUZZ_ACP_DISPLAY_NAME" || echo "could not set profile name (will retry on next restart)"
+# Runtime (plan 12). goose: its own developer extension (shell + file edit) replaces buzz-dev-mcp; provider = LiteLLM;
+# context limit from the same registry read; keyring off (no D-Bus in a container); auto mode = no permission prompts.
+case "${TEAM_RUNTIME:-buzz-agent}" in
+  goose)
+    command -v goose >/dev/null || { echo "TEAM_RUNTIME=goose but this image has no goose binary (make goose-image; make dinesh-runtime R=goose)" >&2; exit 1; }
+    export BUZZ_ACP_AGENT_COMMAND=goose BUZZ_ACP_AGENT_ARGS="acp,--with-builtin,developer" BUZZ_ACP_MCP_COMMAND=""
+    export GOOSE_PROVIDER=openai GOOSE_MODEL="$OPENAI_COMPAT_MODEL" OPENAI_HOST="${OPENAI_COMPAT_BASE_URL%/v1}" OPENAI_API_KEY="$OPENAI_COMPAT_API_KEY"
+    export GOOSE_MODE=auto GOOSE_DISABLE_KEYRING=1 GOOSE_CONTEXT_LIMIT="$BUZZ_AGENT_MAX_CONTEXT_TOKENS" GOOSE_MAX_TURNS=200
+    echo "runtime=goose $(goose --version 2>/dev/null | tr -d ' ') context=$GOOSE_CONTEXT_LIMIT" ;;
+  buzz-agent) ;;
+  *) echo "unknown TEAM_RUNTIME '$TEAM_RUNTIME' (buzz-agent|goose)" >&2; exit 1 ;;
+esac
+
 # Progress mirror (plan 11), opt-in: the harness log goes through team-narrate.sh, which echoes it (docker logs unchanged)
 # and posts commands/narration into the job thread. FIFO so the harness stays PID 1 via exec (healthcheck: pgrep -f buzz-acp).
 # acp::wire at debug carries the shell command text the mirror needs (~10x log volume; rotated by compose).

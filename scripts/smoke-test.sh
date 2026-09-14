@@ -146,6 +146,16 @@ EOF
   [ "$n" = 2 ] && echo "mirror: 2 replies (narration + wrapped git push); skipped fetch, buzz send, final chunk, conversation turn" || fail "expected 2 mirror replies from dinesh, got $n"
 }
 
+test_team_runtime() {   # G23: dinesh runs the runtime .env asks for (plan 12)
+  echo "--- team: dinesh runtime = ${TEAM_DINESH_RUNTIME:-buzz-agent}"
+  docker compose exec -T dinesh sh -c 'tr "\0" " " </proc/1/cmdline | cut -c1-40; echo'
+  docker compose logs --since 24h --no-log-prefix dinesh 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -oE 'agent initialized agent=0 name="[a-z-]+"' | tail -1
+  case "${TEAM_DINESH_RUNTIME:-buzz-agent}" in
+    goose) docker compose exec -T dinesh sh -c 'goose --version && pgrep -f "goose acp" >/dev/null && echo "goose acp running"' || fail "goose runtime requested but not running" ;;
+    *) docker compose exec -T dinesh sh -c 'pgrep -f buzz-agent >/dev/null && echo "buzz-agent running"' || fail "buzz-agent not running" ;;
+  esac
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
@@ -156,4 +166,5 @@ has_profile gitea-runner && test_gitea_runner
 has_profile team && ./scripts/team-smoke.sh
 has_profile team && test_team_factory
 has_profile team && test_team_narrate
+has_profile team && test_team_runtime
 echo "smoke test finished"
