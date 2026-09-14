@@ -48,7 +48,7 @@ fi
 
 # Prompt = team norms + persona (base prompt is prepended by the harness itself)
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/${TEAM_ROLE}.md"; } > "$HOME/.prompt.md"
-sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
+sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$GILFOYLE_PUBKEY|${GILFOYLE_PUBKEY:-}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
 
 # Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
 # Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).
@@ -64,4 +64,15 @@ echo "model=$OPENAI_COMPAT_MODEL context=$BUZZ_AGENT_MAX_CONTEXT_TOKENS output=$
 
 buzz users set-profile --name "$BUZZ_ACP_DISPLAY_NAME" --about "open-llm-stack team agent (${TEAM_ROLE}), model ${OPENAI_COMPAT_MODEL}" >/dev/null 2>&1 \
   && echo "profile name set: $BUZZ_ACP_DISPLAY_NAME" || echo "could not set profile name (will retry on next restart)"
+# Progress mirror (plan 11), opt-in: the harness log goes through team-narrate.sh, which echoes it (docker logs unchanged)
+# and posts commands/narration into the job thread. FIFO so the harness stays PID 1 via exec (healthcheck: pgrep -f buzz-acp).
+# acp::wire at debug carries the shell command text the mirror needs (~10x log volume; rotated by compose).
+case "${TEAM_NARRATE:-off}" in
+  tools|both|stream)
+    export RUST_LOG="${RUST_LOG:-info},acp::wire=debug"
+    rm -f /tmp/acp.log; mkfifo /tmp/acp.log
+    bash /opt/team/team-narrate.sh </tmp/acp.log &
+    echo "progress mirror: $TEAM_NARRATE"
+    exec /usr/local/bin/sprig-entrypoint >/tmp/acp.log 2>&1 ;;
+esac
 exec /usr/local/bin/sprig-entrypoint

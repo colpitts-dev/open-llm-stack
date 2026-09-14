@@ -57,14 +57,19 @@ x-team-agent: &team-agent
     GITEA_OWNER: ${TEAM_GITEA_ORG:-piedpiper}   # org, not the admin user: a non-admin cannot create repos in another user's namespace
     GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}    # with GITEA_HUMAN, the only users who may merge (branch-protection merge whitelist)
     GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
+    GILFOYLE_PUBKEY: ${TEAM_GILFOYLE_PUBKEY:-}   # inlined into the prompt: builders mention the reviewer without hunting the members list (plan 11)
     TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
     RUST_LOG: info
+    TEAM_NARRATE: ${TEAM_NARRATE:-off}   # off | tools | both: progress mirror into the job thread (plan 11; the entrypoint raises RUST_LOG when on)
   healthcheck:
     test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
     interval: 15s
     timeout: 5s
     retries: 3
     start_period: 150s
+  logging:                            # acp::wire debug (mirror on) is ~10x the info volume; bound it
+    driver: json-file
+    options: { max-size: "20m", max-file: "3" }
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -373,6 +378,7 @@ services:
     volumes:
       - team-dinesh:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
       - ./agents:/opt/team/agents:ro
       - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
@@ -389,6 +395,7 @@ services:
     volumes:
       - team-gilfoyle:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
       - ./agents:/opt/team/agents:ro
       - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
@@ -405,6 +412,7 @@ services:
     volumes:
       - team-jared:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
       - ./agents:/opt/team/agents:ro
       - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
@@ -423,6 +431,7 @@ services:
     volumes:
       - team-erlich:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
       - ./agents:/opt/team/agents:ro
       - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:
@@ -437,6 +446,7 @@ services:
     volumes:
       - team-monica:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
+      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
       - ./agents:/opt/team/agents:ro
       - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
     environment:

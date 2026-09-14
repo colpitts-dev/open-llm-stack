@@ -118,6 +118,34 @@ test_team_factory() {
   curl -fsS -o /dev/null -X DELETE -H "$auth" "$base/repos/$org/$name" && echo "deleted $name"
 }
 
+test_team_narrate() {   # G21: canned harness log through team-narrate.sh inside dinesh -> expected replies in a throwaway thread
+  local relay="${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}" sprig=ghcr.io/block/buzz-sprig:sha-e17cdd9
+  echo "--- team: progress mirror (canned log through team-narrate.sh in dinesh, no LLM)"
+  bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$TEAM_SMOKE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$relay" --entrypoint buzz "$sprig" "$@"; }
+  local ch root root8 n
+  ch=$(bz channels create --name "narrate-$(date +%s)" --type stream --visibility open --ttl 3600 | jq -r .channel_id)
+  bz channels add-member --channel "$ch" --pubkey "$TEAM_DINESH_PUBKEY" --role bot >/dev/null
+  root=$(bz messages send --channel "$ch" --content "job root (mirror probe)" | jq -r .event_id); root8="${root:0:8}"
+  docker compose exec -T -e TEAM_NARRATE=both dinesh bash /opt/team/team-narrate.sh >/dev/null <<EOF
+2026-01-01T00:00:00.000000Z  INFO pool::prompt: turn starting for channel $ch (thread:$root8)
+2026-01-01T00:00:01.000000Z  INFO acp::stream: Picked up: probe narration line.
+
+
+2026-01-01T00:00:02.000000Z DEBUG acp::wire: ← {"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"other","rawInput":{"command":"git fetch origin && git checkout main"},"sessionUpdate":"tool_call","status":"pending","title":"buzz-dev-mcp__shell"}}}
+2026-01-01T00:00:03.000000Z DEBUG acp::wire: ← {"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"other","rawInput":{"command":"git add -A && git commit -m \\"feat: probe\\" && git push -u origin agent/probe"},"sessionUpdate":"tool_call","status":"pending","title":"buzz-dev-mcp__shell"}}}
+2026-01-01T00:00:04.000000Z DEBUG acp::wire: ← {"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"other","rawInput":{"command":"buzz messages send --channel $ch --content \\"visible already\\""},"sessionUpdate":"tool_call","status":"pending","title":"buzz-dev-mcp__shell"}}}
+2026-01-01T00:00:05.000000Z  INFO acp::stream: @Richard-smoke this is the final answer and must NOT be mirrored
+2026-01-01T00:00:06.000000Z  INFO pool::prompt: turn complete for channel $ch (thread:$root8): end_turn
+2026-01-01T00:00:07.000000Z  INFO pool::prompt: turn starting for channel $ch (conversation)
+2026-01-01T00:00:08.000000Z  INFO acp::stream: must not be posted (conversation scope)
+2026-01-01T00:00:09.000000Z  INFO pool::prompt: turn complete for channel $ch (conversation): end_turn
+EOF
+  sleep 3
+  bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$TEAM_DINESH_PUBKEY" '.[] | select(.pubkey==$d) | "mirror: \(.content|gsub("\n";" | "))"'
+  n=$(bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$TEAM_DINESH_PUBKEY" '[.[] | select(.pubkey==$d)] | length')
+  [ "$n" = 2 ] && echo "mirror: 2 replies (narration + wrapped git push); skipped fetch, buzz send, final chunk, conversation turn" || fail "expected 2 mirror replies from dinesh, got $n"
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
@@ -127,4 +155,5 @@ has_profile buzz-agent && ./scripts/buzz-smoke.sh
 has_profile gitea-runner && test_gitea_runner
 has_profile team && ./scripts/team-smoke.sh
 has_profile team && test_team_factory
+has_profile team && test_team_narrate
 echo "smoke test finished"

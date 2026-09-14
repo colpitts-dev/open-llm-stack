@@ -31,3 +31,26 @@ bz messages send --channel "$ch" --mention "$TEAM_GILFOYLE_PUBKEY" --content "@G
 rv=""; for i in $(seq 1 60); do sleep 10; rv=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/pulls/$pr/reviews" | jq -r '[.[] | select(.user.login=="gilfoyle" and .state!="PENDING")] | last | .state // empty'); [ -n "$rv" ] && break; done
 echo "Gilfoyle review: ${rv:-(none within 10 min)}"; [ -n "$rv" ] || exit 1
 echo "TEAM SMOKE PASS: PR #$pr, CI success, review $rv. Merge it in Gitea to close the loop (not automated on purpose)."
+# Thread conventions (plan 11, G22): milestones + labelled deliverables from the agents' own posts; the mirror line only when it is on
+root=$(bz messages get --channel "$ch" --limit 20 | jq -r '[.[] | select(.content|startswith("@Dinesh"))][0].id')
+rroot=$(bz messages get --channel "$ch" --limit 20 | jq -r '[.[] | select(.content|startswith("@Gilfoyle review please"))][0].id')
+# Dinesh's turn may still be running after Gilfoyle answered (CI milestone and deliverable come in either order): wait up to 3 min for PR + CI milestone + Review
+for i in $(seq 1 18); do
+  th=$(bz messages thread --channel "$ch" --event "$root"); rth=$(bz messages thread --channel "$ch" --event "$rroot")
+  jq -e --arg d "$TEAM_DINESH_PUBKEY" '[.[] | select(.pubkey==$d and (.content|test("^\\*\\*PR:\\*\\* ")))] | length > 0' <<<"$th" >/dev/null \
+    && jq -e --arg d "$TEAM_DINESH_PUBKEY" '[.[] | select(.pubkey==$d and (.content|test("^(🚩 )?CI (success|failure)")))] | length > 0' <<<"$th" >/dev/null \
+    && jq -e --arg g "$TEAM_GILFOYLE_PUBKEY" '[.[] | select(.pubkey==$g and (.content|test("^\\*\\*Review:\\*\\* ")))] | length > 0' <<<"$(jq -s add <(printf '%s' "$th") <(printf '%s' "$rth"))" >/dev/null && break
+  sleep 10   # Gilfoyle's thread post lands a few seconds after his Gitea review; Dinesh may still be finishing
+done
+th=$(jq -s 'add' <(printf '%s' "$th") <(printf '%s' "$rth"))   # job thread + review-request thread (Gilfoyle replies to the request)
+jq -r --arg d "$TEAM_DINESH_PUBKEY" --arg g "$TEAM_GILFOYLE_PUBKEY" '.[] | select(.pubkey==$d or .pubkey==$g) | (.content | split("\n")[0])' <<<"$th" | sed 's/^/thread: /' | head -40
+chk() { jq -e --arg p "$1" --arg re "$2" '[.[] | select(.pubkey==$p and (.content|test($re)))] | length > 0' <<<"$th" >/dev/null && echo "PASS: $3" || { echo "FAIL: $3"; return 1; }; }
+ok=0
+# Milestones are persona posts: reported, not gated (2026-09-13: present in 8 of 11 runs, once without the flag). Labels are gated.
+rep() { jq -e --arg p "$1" --arg re "$2" '[.[] | select(.pubkey==$p and (.content|test($re)))] | length > 0' <<<"$th" >/dev/null && echo "milestone: $3 present" || echo "milestone: $3 ABSENT (model skipped a persona step; not gated)"; }
+rep "$TEAM_DINESH_PUBKEY" '^🚩 pushed '              "push"
+rep "$TEAM_DINESH_PUBKEY" '^🚩 CI (success|failure)' "CI"
+chk "$TEAM_DINESH_PUBKEY"   '^\*\*PR:\*\* http'        "PR deliverable label"   || ok=1
+chk "$TEAM_GILFOYLE_PUBKEY" '^\*\*Review:\*\* '        "review label"           || ok=1
+case "${TEAM_NARRATE:-off}" in tools|both) chk "$TEAM_DINESH_PUBKEY" '^```\n\$ [^`]*git push' "mirror: git push command" || ok=1 ;; esac
+[ "$ok" = 0 ] || { echo "THREAD CONVENTIONS FAIL (see above)" >&2; exit 1; }

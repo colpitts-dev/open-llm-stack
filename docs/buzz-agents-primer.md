@@ -18,6 +18,7 @@ Purpose: load this file to work on Buzz agents in this stack without re-reading 
 - Gate `BUZZ_ACP_RESPOND_TO`: owner-only (default; owner from NIP-OA `BUZZ_AUTH_TAG` or `BUZZ_ACP_AGENT_OWNER`) | allowlist (+`BUZZ_ACP_RESPOND_TO_ALLOWLIST`) | anyone | nobody. Owner commands: `!cancel` `!rotate` `!shutdown`.
 - Ownership: NIP-OA auth tag (owner-signed) → NIP-AA relay admission via owner membership → relay-git push rights inherited from owner. Desktop mints it; no CLI found for standalone keys → server agents = standalone identities, `buzz-admin add-member` on a closed relay.
 - Memory: `core` engram injected each turn (keep <10 KB); cold `buzz mem set/get/ls/patch/rm`. Heartbeat: `BUZZ_ACP_HEARTBEAT_INTERVAL` + prompt. Hooks: `_Stop`/`_PostCompact` via `MCP_HOOK_SERVERS` (off).
+- Progress visibility (this stack, plan 11): the harness log is the only source of narration/commands; `scripts/team-narrate.sh` mirrors it into the job thread (`TEAM_NARRATE`). The app's observer pane (NIP-AO, `BUZZ_ACP_RELAY_OBSERVER`) renders only app-managed agents (kind 30177 signed by the owner's app key), so server agents never appear there.
 - Security today: one process serves all its channels with full ambient authority (shell, key). Broker/audience isolation is a proposal. → one identity per audience.
 
 ## 3. Measured on this stack (ornith-max / qwen3.6-max via LiteLLM → Ollama, RTX 5090)
