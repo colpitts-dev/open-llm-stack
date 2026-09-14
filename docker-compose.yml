@@ -58,8 +58,10 @@ x-team-agent: &team-agent
     GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}    # with GITEA_HUMAN, the only users who may merge (branch-protection merge whitelist)
     GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
     GILFOYLE_PUBKEY: ${TEAM_GILFOYLE_PUBKEY:-}   # inlined into the prompt: builders mention the reviewer without hunting the members list (plan 11)
+    JARED_PUBKEY: ${TEAM_JARED_PUBKEY:-}       # inlined into the prompt: Gilfoyle asks the judge for a score (plan 13)
     TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
     RUST_LOG: info
+    TEAM_RUNTIME: buzz-agent           # plan 12: dinesh overrides this from TEAM_DINESH_RUNTIME
     TEAM_NARRATE: ${TEAM_NARRATE:-off}   # off | tools | both: progress mirror into the job thread (plan 11; the entrypoint raises RUST_LOG when on)
   healthcheck:
     test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
@@ -280,6 +282,12 @@ services:
     image: ollama/ollama:0.34.0   # verified 2026-09-12
     profiles: [ollama]
     restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-3}   # one slot per concurrently talking agent: the slot keeps that agent's prompt cache (plan 14)
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}      # backstop for callers that bypass LiteLLM; the registry's keep_alive rules the rest
+      OLLAMA_MAX_LOADED_MODELS: "2"                    # the chat model and the embedding model; a second chat model evicts the first
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0                       # halves the KV cost of the window; the registry's windows assume it
     volumes:
       - ollama-data:/root/.ollama
     # No ports: the Ollama API has no auth of its own; it is reachable only from this compose network.
@@ -339,8 +347,8 @@ services:
       OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY:?run make init}
       OPENAI_COMPAT_MODEL: ${BUZZ_AGENT_MODEL:-ornith-max}
       OPENAI_COMPAT_API: chat
-      BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-237568}   # = that model's max_input_tokens in proxy/config.yaml
-      BUZZ_AGENT_MAX_OUTPUT_TOKENS: "16384"                                      # = max_output_tokens
+      BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-65536}    # = that model's max_input_tokens in proxy/config.yaml (plan 14)
+      BUZZ_AGENT_MAX_OUTPUT_TOKENS: "32768"                                      # = max_output_tokens (plan 14: thinking counts)
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
       interval: 15s
@@ -375,6 +383,7 @@ services:
   # ---------------------------------------------------------------- profile: team
   dinesh:
     <<: *team-agent
+    image: ${TEAM_DINESH_IMAGE:-ghcr.io/block/buzz-sprig:sha-e17cdd9}   # plan 12: open-llm-stack/goose-agent:1.50.0 when TEAM_DINESH_RUNTIME=goose (make dinesh-runtime)
     volumes:
       - team-dinesh:/home/agent
       - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
@@ -384,6 +393,7 @@ services:
     environment:
       <<: *team-env
       TEAM_ROLE: dinesh
+      TEAM_RUNTIME: ${TEAM_DINESH_RUNTIME:-buzz-agent}
       BUZZ_ACP_DISPLAY_NAME: Dinesh
       BUZZ_PRIVATE_KEY: ${TEAM_DINESH_PRIVATE_KEY:?run make init}
       BUZZ_ACP_SESSION_POLICY: thread
@@ -421,7 +431,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Jared
       BUZZ_PRIVATE_KEY: ${TEAM_JARED_PRIVATE_KEY:?run make init}
       BUZZ_ACP_SESSION_POLICY: channel
-      BUZZ_ACP_HEARTBEAT_INTERVAL: ${TEAM_HEARTBEAT_SECONDS:-1800}
+      BUZZ_ACP_HEARTBEAT_INTERVAL: ${TEAM_HEARTBEAT_SECONDS:-0}      # off by default since plan 14: a tick is ~13 full-prefill LLM calls and keeps the model resident
       BUZZ_ACP_HEARTBEAT_PROMPT_FILE: /opt/team/agents/jared-heartbeat.md
       GITEA_USER: jared
       GITEA_TOKEN: ${TEAM_JARED_GITEA_TOKEN:-}
@@ -457,3 +467,4 @@ services:
       BUZZ_ACP_SESSION_POLICY: thread
       GITEA_USER: monica
       GITEA_TOKEN: ${TEAM_MONICA_GITEA_TOKEN:-}
+

@@ -47,23 +47,31 @@ mutating() {  # only commands that change state are worth a post (UX review): wr
   esac; return 1
 }
 
+# Matching is glob/substring based on purpose: bash =~ (glibc regex) with `.*` on a 100 KB wire frame spins for minutes
+# (seen 2026-09-14: the filter pegged a CPU on a goose `write` frame and the harness blocked on the FIFO).
 while IFS= read -r line; do
   printf '%s\n' "$line"
-  line="${line//$'\e'\[*([0-9;])m/}"                          # strip ANSI colour codes
   [ "$mode" = off ] && continue
-  if [[ $line =~ $ts ]]; then
-    if [[ $line =~ turn\ complete\ for\ channel ]]; then
+  # ANSI codes sit only in the record prefix (timestamp, level, target). A global strip over a 25 KB wire frame is quadratic
+  # in bash and pegged a CPU (2026-09-14); strip the first 60 bytes only, classify with globs on the raw line.
+  pre="${line:0:60}"; pre="${pre//$'\e'\[*([0-9;])m/}"
+  if [[ ${pre:0:40} =~ $ts ]]; then
+    head="${line:0:400}"
+    if [[ $head == *"turn complete for channel "* ]]; then
       buf=""; channel=""; root8=""                                # last chunk of the turn = the reply itself: dropped
-    elif [[ $line =~ turn\ starting\ for\ channel\ ([0-9a-f-]{36})\ \(thread:([0-9a-f]{8})\) ]]; then
+    elif [[ $head == *"turn starting for channel "*"(thread:"* ]] && [[ $head =~ channel\ ([0-9a-f-]{36})\ \(thread:([0-9a-f]{8})\) ]]; then
       buf=""; channel="${BASH_REMATCH[1]}"; root8="${BASH_REMATCH[2]}"
-    elif [[ $line =~ turn\ starting\ for\ channel\ ([0-9a-f-]{36})\ \(conversation\) ]]; then
+    elif [[ $head == *"turn starting for channel "*"(conversation)"* ]]; then
       buf=""; channel=""; root8=""                                # channel-scoped agent: nothing to reply to
-    elif [[ $line =~ INFO\ acp::stream:\ (.*)$ ]]; then
-      [ -n "$buf" ] && flush
-      buf="${BASH_REMATCH[1]}"
-    elif [[ $line =~ DEBUG\ acp::wire:\ ←\ (.*\"sessionUpdate\":\"tool_call\".*)$ ]]; then
+    elif [[ $head == *"acp::stream"* ]]; then
+      # consecutive narration records join (goose streams token-sized chunks; buzz-agent paragraph chunks): one post per run
+      chunk="${line#*acp::stream$'\e'\[0m$'\e'\[2m:$'\e'\[0m }"                # coloured prefix form
+      [ "$chunk" = "$line" ] && chunk="${line#*acp::stream: }"           # plain form
+      [ -n "$buf" ] && buf+="$chunk" || buf="$chunk"
+    elif [[ $head == *"acp::wire"*"← "* ]] && [[ $line == *'"sessionUpdate":"tool_call"'* ]]; then
       [ -n "$buf" ] && flush                                       # a chunk followed by a tool call is narration, not the reply
-      if [ "$want_tools" = 1 ] && [[ ${BASH_REMATCH[1]} =~ \"command\":\"((\\.|[^\"\\])*)\" ]]; then
+      rest="${line#*\"command\":\"}"                              # from the command's first byte; bounded before any regex
+      if [ "$want_tools" = 1 ] && [ "$rest" != "$line" ] && [[ ${rest:0:4000} =~ ^((\\.|[^\"\\])*)\" ]]; then
         cmd=$(unescape "${BASH_REMATCH[1]}")
         case "$cmd" in *"buzz messages send"*|*"buzz reactions add"*) ;;   # already visible as the agent's own post
           *) mutating "$cmd" && post "$(printf '```\n$ %s\n```' "$(wrap "$cmd")")" ;;

@@ -13,3 +13,6 @@ models/
 .serena/cache/
 .serena/project.local.yml
 .serena/logs/
+# private, never committed
+docs/business/
+__pycache__/

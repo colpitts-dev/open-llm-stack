@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report context-probe model-fit context-report power-meter power-ingest cost-report
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -38,3 +38,38 @@ team-model:      ## switch every team agent's model: make team-model M=qwen3.8-m
 	sed -i 's|^TEAM_MODEL=.*|TEAM_MODEL=$(M)|' .env
 	docker compose up -d --force-recreate dinesh gilfoyle jared erlich monica   # --force-recreate: a plain up -d once skipped the restart after the .env edit
 	@echo "team now on $(M); each agent re-reads its context window from the registry on start"
+
+goose-image:     ## build open-llm-stack/goose-agent (plan 12; downloads the pinned goose release, apt-get)
+	docker build -t open-llm-stack/goose-agent:1.50.0 agents/goose
+
+dinesh-runtime:  ## switch Dinesh's runtime: make dinesh-runtime R=goose|buzz-agent (plan 12)
+	@case "$(R)" in goose) img=open-llm-stack/goose-agent:1.50.0 ;; buzz-agent) img=ghcr.io/block/buzz-sprig:sha-e17cdd9 ;; *) echo "usage: make dinesh-runtime R=goose|buzz-agent"; exit 1 ;; esac; \
+	sed -i "s|^TEAM_DINESH_RUNTIME=.*|TEAM_DINESH_RUNTIME=$(R)|; s|^TEAM_DINESH_IMAGE=.*|TEAM_DINESH_IMAGE=$$img|" .env; \
+	grep -qE '^TEAM_DINESH_IMAGE=' .env || echo "TEAM_DINESH_IMAGE=$$img" >> .env; \
+	docker compose up -d --force-recreate --wait dinesh && docker compose logs --since 1m --no-log-prefix dinesh | grep -E 'runtime=|agent initialized|presence set' | cut -c1-120
+
+score-sync:      ## outcome labels for scored PRs from their final state in Gitea (plan 13)
+	./scripts/score-sync.sh
+
+score-report:    ## complexity counts and the confidence x outcome reliability table (plan 13)
+	./scripts/score-report.sh
+
+context-probe:   ## prove every chat model's declared window through the gateway (any backend): make context-probe [M=<model>] [FULL=1] (plan 14)
+	./scripts/context-probe.sh
+
+model-fit:       ## Ollama: measure a model's window on the live backend, print its registry block: make model-fit M=<tag> [OUT=32768] [MAX_WINDOW=131072] (plan 14)
+	@test -n "$(M)" || { echo "usage: make model-fit M=<ollama tag> [OUT=<max_output_tokens>] [HEADROOM_MB=2048] [MAX_WINDOW=131072]"; exit 1; }
+	M=$(M) ./scripts/model-fit.sh
+
+context-report:  ## real prompt/completion sizes per model vs the registry caps, from LiteLLM's spend log (plan 14)
+	./scripts/context-report.sh
+
+power-meter:     ## meter energy into litellm-db, 1 row/s per domain (plan 15; foreground, Ctrl-C to stop): probes from POWER_PROBES
+	@set -a; . ./.env; set +a; [ -n "$$POWER_COST_PER_KWH" ] || { echo "POWER_COST_PER_KWH is blank in .env: energy accounting off"; exit 0; }; \
+	python3 scripts/power-meter.py --probes "$${POWER_PROBES:-nvml}" | python3 scripts/power-meter.py --ingest
+
+power-ingest:    ## meter lines on stdin into litellm-db; a second host: ssh gpu2 python3 - --probes nvml < scripts/power-meter.py | make power-ingest (plan 15)
+	@python3 scripts/power-meter.py --ingest
+
+cost-report:     ## kWh the local models burned and what it cost, then per model, client, domain (plan 15): make cost-report [SINCE="24 hours"]
+	./scripts/cost-report.sh

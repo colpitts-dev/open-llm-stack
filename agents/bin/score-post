@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Combine the judge's rubric into scores; label the PR, post the breakdown comment, post the thread line (plan 13).
+# Usage: score-post <repo> <pr> <rubric.json> [<channel-uuid> <thread-root-id>]. Bash only (no jq): the rubric is flat.
+# rubric.json = {"scope":0-2,"novelty":0-2,"risk":0-2,"verification":0-2,"ambiguity":0-2,
+#                "tests":0-2,"ci":0-2,"review":0-2,"scope_match":0-2,"hygiene":0-2,"summary":"<one clause>","evidence":{"<dim>":"<line>",...}}
+set -euo pipefail
+repo="${1:?repo}"; n="${2:?pr}"; rf="${3:?rubric.json}"; ch="${4:-}"; root="${5:-}"
+. "$HOME/.gitea.env"; B="$GITEA_URL/api/v1"; H=(-H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json")
+j=$(tr -d '\n' < "$rf")
+get() { if [[ $j =~ \"$1\":([0-2])[,}] ]]; then printf '%s' "${BASH_REMATCH[1]}"; else echo "rubric: '$1' missing or not 0..2" >&2; exit 2; fi; }
+for k in scope novelty risk verification ambiguity tests ci review scope_match hygiene; do declare "$k=$(get "$k")"; done
+summary=""; [[ $j =~ \"summary\":\"(([^\"\\]|\\.)*)\" ]] && summary="${BASH_REMATCH[1]}"
+[ -n "$summary" ] || { echo "rubric: summary missing" >&2; exit 2; }
+csum=$((scope+novelty+risk+verification+ambiguity)); case $csum in 0|1) cx=1 ;; 2|3) cx=2 ;; 4|5) cx=3 ;; 6|7) cx=4 ;; *) cx=5 ;; esac
+fsum=$((tests+ci+review+scope_match+hygiene))
+if [ "$ci" = 0 ]; then cf=low; elif [ $fsum -ge 8 ]; then cf=high; elif [ $fsum -ge 5 ]; then cf=medium; else cf=low; fi
+pr=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n"); sha=""; [[ $pr =~ \"head\":\{[^}]*\"sha\":\"([0-9a-f]{40})\" ]] && sha="${BASH_REMATCH[1]}"
+[ -n "$sha" ] || { echo "cannot read $repo#$n" >&2; exit 1; }
+# labels: exclusive scopes keep one value per scope; remove any stale value of ours first (belt and braces)
+have=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/labels")
+for old in $(grep -oE '"id":[0-9]+,"name":"(complexity|confidence)/[a-z0-9]+"' <<<"$have" | grep -oE '[0-9]+' | head -20); do
+  curl -sS -o /dev/null -X DELETE "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/labels/$old" || true
+done
+curl -fsS -o /dev/null "${H[@]}" -d "{\"labels\":[\"complexity/$cx\",\"confidence/$cf\"]}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/labels" || { echo "cannot label $repo#$n (pulls write needed)" >&2; exit 4; }   # no labels = no score: the report reads labels
+# one comment, machine-readable
+body=$(printf '**Score:** complexity %s/5 · confidence %s — %s\n\n```json\n{"schema":1,"pr":"%s#%s","sha":"%s","complexity":%s,"confidence":"%s","rubric":%s,"judge":"%s","scored_at":"%s"}\n```' \
+  "$cx" "$cf" "$summary" "$repo" "$n" "$sha" "$cx" "$cf" "$j" "$GITEA_USER" "$(date -u +%FT%TZ)")
+esc=$(printf '%s' "$body" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
+curl -fsS -o /dev/null "${H[@]}" -d "{\"body\":\"$esc\"}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/comments"
+echo "labelled $repo#$n complexity/$cx confidence/$cf (sha ${sha:0:7})"
+# thread line (the judge's deliverable; bold label, no mention)
+if [ -n "$ch" ] && [ -n "$root" ]; then
+  printf '**Score:** complexity %s/5 · confidence %s — %s\n' "$cx" "$cf" "$summary" | buzz messages send --channel "$ch" --reply-to "$root" --content - >/dev/null && echo "posted in thread"
+fi
