@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -47,3 +47,9 @@ dinesh-runtime:  ## switch Dinesh's runtime: make dinesh-runtime R=goose|buzz-ag
 	sed -i "s|^TEAM_DINESH_RUNTIME=.*|TEAM_DINESH_RUNTIME=$(R)|; s|^TEAM_DINESH_IMAGE=.*|TEAM_DINESH_IMAGE=$$img|" .env; \
 	grep -qE '^TEAM_DINESH_IMAGE=' .env || echo "TEAM_DINESH_IMAGE=$$img" >> .env; \
 	docker compose up -d --force-recreate --wait dinesh && docker compose logs --since 1m --no-log-prefix dinesh | grep -E 'runtime=|agent initialized|presence set' | cut -c1-120
+
+score-sync:      ## outcome labels for scored PRs from their final state in Gitea (plan 13)
+	./scripts/score-sync.sh
+
+score-report:    ## complexity counts and the confidence x outcome reliability table (plan 13)
+	./scripts/score-report.sh

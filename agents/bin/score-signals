@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Deterministic PR signals for the judge (plan 13). Runs inside the judge's container: token from ~/.gitea.env, no jq.
+# Usage: score-signals <repo> <pr-number>   -> prints KEY=VALUE lines, then the diff (first 400 lines). Exit 3 = not ready.
+set -euo pipefail
+repo="${1:?repo}"; n="${2:?pr number}"; . "$HOME/.gitea.env"; B="$GITEA_URL/api/v1"; H=(-H "Authorization: token $GITEA_TOKEN")
+pr=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n"); [[ $pr == *'"number":'* ]] || { echo "no such PR $repo#$n" >&2; exit 1; }
+sha=""; [[ $pr =~ \"head\":\{[^}]*\"sha\":\"([0-9a-f]{40})\" ]] && sha="${BASH_REMATCH[1]}"
+title=""; [[ $pr =~ \"title\":\"(([^\"\\]|\\.)*)\" ]] && title="${BASH_REMATCH[1]}"
+state="unknown"; st=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/commits/$sha/status"); [[ $st =~ \"state\":\"([a-z]+)\" ]] && state="${BASH_REMATCH[1]}"
+reviews=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n/reviews" | grep -oE '"state":"[A-Z_]+"' | cut -d'"' -f4 | grep -v PENDING | paste -sd, || true)
+[ "$state" = success ] || [ "$state" = failure ] || { echo "not ready: CI state is '$state'" >&2; exit 3; }
+[ -n "$reviews" ] || { echo "not ready: no submitted review yet" >&2; exit 3; }
+files=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n/files?limit=100")
+nfiles=$(grep -o '"filename":"' <<<"$files" | wc -l)
+adds=0; dels=0
+for v in $(grep -oE '"additions":[0-9]+' <<<"$files" | cut -d: -f2); do adds=$((adds+v)); done
+for v in $(grep -oE '"deletions":[0-9]+' <<<"$files" | cut -d: -f2); do dels=$((dels+v)); done
+names=$(grep -oE '"filename":"[^"]+"' <<<"$files" | cut -d'"' -f4 || true)
+tests=$(grep -cE '(^|/)tests?/|_test\.|test_' <<<"$names" || true)
+risky=$(grep -cE '^\.gitea/|^\.github/|pyproject\.toml|requirements|Dockerfile|docker-compose|\.env|Makefile' <<<"$names" || true)
+commits=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n/commits" | grep -o '"sha":"' | wc -l)
+printf 'REPO=%s\nPR=%s\nHEAD=%s\nTITLE=%s\nCI=%s\nREVIEWS=%s\nFILES=%s\nADDED=%s\nDELETED=%s\nTEST_FILES=%s\nRISKY_FILES=%s\nCOMMITS=%s\nFILE_LIST=%s\n' \
+  "$repo" "$n" "$sha" "$title" "$state" "$reviews" "$nfiles" "$adds" "$dels" "$tests" "$risky" "$commits" "$(paste -sd, <<<"$names")"
+echo "--- diff (first 400 lines) ---"
+curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n.diff" | head -400

@@ -227,6 +227,10 @@ Reading: at this task size goose and buzz-agent cost the same tokens (±10 %, on
 
 **Default stays `buzz-agent`**; goose is kept as the verified alternative (`make dinesh-runtime R=goose`) with equal cost and cleaner shell behaviour, no clear win on the fixture task. Revisit with a multi-file task (Monica's UI work is the candidate) where goose's file-editing tool and context management should matter; the switch is one command per agent.
 
+### Addendum (2026-09-14, during plan 13)
+
+A sixth goose job (Dinesh on goose after `make dinesh-runtime R=goose` was left on): the turn made 6 tool calls (todo, ls, fetch, cat, two `write`s), narrated "Let me add the function, test, and branch." and ended after 12 s with `end_turn` — no commit, no push, no post; the smoke waited 15 min for a PR. goose has no reply guard and no "finish the protocol" backstop; buzz-agent's reply guard would have rerolled. Score for the runtime comparison: 5 good jobs, 1 abandoned turn. Recorded in §5.13; the default stays `buzz-agent`.
+
 ### Not run and why
 
 - goose for Monica/Gilfoyle: out of scope by design; `TEAM_<AGENT>_RUNTIME` for them is the same three lines in compose/entrypoint.

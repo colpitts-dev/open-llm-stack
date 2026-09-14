@@ -156,6 +156,19 @@ test_team_runtime() {   # G23: dinesh runs the runtime .env asks for (plan 12)
   esac
 }
 
+test_team_score() {   # G26: script-only scoring path inside jared on the newest demo-calc PR; invalid rubric rejected (plan 13)
+  local base="${GITEA_PUBLIC_URL%/}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" judge="Authorization: token ${TEAM_JARED_GITEA_TOKEN}" org="${TEAM_GITEA_ORG:-piedpiper}"
+  echo "--- team: PR scoring (score-post with a canned rubric inside jared, no LLM)"
+  local n; n=$(curl -fsS -H "$auth" "$base/repos/$org/demo-calc/pulls?state=all&limit=1" | jq -r '.[0].number'); [ -n "$n" ] && [ "$n" != null ] || fail "no PR in demo-calc"
+  if docker compose exec -T jared bash -c 'printf "{\"scope\":0,\"novelty\":3}" > /tmp/bad.json; /opt/team/agents/bin/score-post demo-calc '"$n"' /tmp/bad.json' >/dev/null 2>&1; then fail "score-post accepted a bad rubric"; else echo "bad rubric rejected"; fi
+  docker compose exec -T jared bash -c 'cat > /tmp/r.json <<EOF
+{"scope":0,"novelty":0,"risk":0,"verification":0,"ambiguity":0,"tests":2,"ci":2,"review":2,"scope_match":2,"hygiene":2,"summary":"smoke: canned rubric","evidence":{"scope":"one function"}}
+EOF
+/opt/team/agents/bin/score-post demo-calc '"$n"' /tmp/r.json'
+  curl -fsS -H "$judge" "$base/repos/$org/demo-calc/issues/$n/labels" | jq -r 'map(.name)|join(",")' | grep 'complexity/1' | grep -q 'confidence/high' && echo "labels: complexity/1, confidence/high on demo-calc#$n" || fail "labels missing on demo-calc#$n"
+  curl -fsS -H "$judge" "$base/repos/$org/demo-calc/issues/$n/comments" | jq -e '[.[] | select(.body|startswith("**Score:**"))] | length > 0' >/dev/null && echo "score comment present" || fail "no score comment"
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
@@ -167,4 +180,5 @@ has_profile team && ./scripts/team-smoke.sh
 has_profile team && test_team_factory
 has_profile team && test_team_narrate
 has_profile team && test_team_runtime
+has_profile team && test_team_score
 echo "smoke test finished"

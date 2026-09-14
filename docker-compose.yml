@@ -58,6 +58,7 @@ x-team-agent: &team-agent
     GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}    # with GITEA_HUMAN, the only users who may merge (branch-protection merge whitelist)
     GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
     GILFOYLE_PUBKEY: ${TEAM_GILFOYLE_PUBKEY:-}   # inlined into the prompt: builders mention the reviewer without hunting the members list (plan 11)
+    JARED_PUBKEY: ${TEAM_JARED_PUBKEY:-}       # inlined into the prompt: Gilfoyle asks the judge for a score (plan 13)
     TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
     RUST_LOG: info
     TEAM_RUNTIME: buzz-agent           # plan 12: dinesh overrides this from TEAM_DINESH_RUNTIME
@@ -460,3 +461,4 @@ services:
       BUZZ_ACP_SESSION_POLICY: thread
       GITEA_USER: monica
       GITEA_TOKEN: ${TEAM_MONICA_GITEA_TOKEN:-}
+

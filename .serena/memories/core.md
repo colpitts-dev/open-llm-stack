@@ -1,6 +1,6 @@
 ## Project
 
-open-llm-stack — local-first, open-weights dev stack in one docker compose: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003); optional profiles `ollama`, `llamacpp`, `buzz-agent`. Binding spec: `docs/spec.md`. Rules: `AGENTS.md` (auto-loaded via CLAUDE.md — do not duplicate here). Plans 01–07 executed and validated 2026-09-12, plan 08 (agent team + Gitea Actions: profiles `gitea-runner`, `team`) 2026-09-13; execution reports at the end of each `plans/NN-*.md`. Remote: github.com/colpitts-dev/open-llm-stack.
+open-llm-stack — local-first, open-weights dev stack in one docker compose: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003); optional profiles `ollama`, `llamacpp`, `buzz-agent`. Binding spec: `docs/spec.md`. Rules: `AGENTS.md` (auto-loaded via CLAUDE.md — do not duplicate here). Plans 01–07 executed and validated 2026-09-12, plan 08 (agent team + Gitea Actions: profiles `gitea-runner`, `team`) 2026-09-13, plans 09–13 by 2026-09-14 (external Gitea, repo factory, progress mirror, goose runtime, PR scoring with Jared as judge); execution reports at the end of each `plans/NN-*.md`. Remote: github.com/colpitts-dev/open-llm-stack.
 
 Quick LLM priming for Buzz agent work: `docs/buzz-agents-primer.md` (flat, dense; the memories below are the graph form of the same research).
 

@@ -13,6 +13,7 @@ bz users set-profile --name Richard-smoke >/dev/null
 ch=$(bz channels create --name "job-$(date +%s)" --type stream --visibility open --ttl 7200 | jq -r .channel_id)
 bz channels add-member --channel "$ch" --pubkey "$TEAM_DINESH_PUBKEY" --role bot >/dev/null
 bz channels add-member --channel "$ch" --pubkey "$TEAM_GILFOYLE_PUBKEY" --role bot >/dev/null
+bz channels add-member --channel "$ch" --pubkey "$TEAM_JARED_PUBKEY" --role bot >/dev/null      # the judge: delivery is members-only, and `@Jared` in a message body fails to send unless he is a member (plan 13)
 sleep 3; echo "channel $ch"
 n0=$(curl -fsS -H "$A" "$B/repos/$OWNER/$REPO/pulls?state=all" | jq '[.[].number] | max // 0')   # only a PR numbered above this counts
 feature="subtract-$(date +%s | tail -c 5)"
@@ -54,3 +55,13 @@ chk "$TEAM_DINESH_PUBKEY"   '^\*\*PR:\*\* http'        "PR deliverable label"   
 chk "$TEAM_GILFOYLE_PUBKEY" '^\*\*Review:\*\* '        "review label"           || ok=1
 case "${TEAM_NARRATE:-off}" in tools|both) chk "$TEAM_DINESH_PUBKEY" '^```\n\$ [^`]*git push' "mirror: git push command" || ok=1 ;; esac
 [ "$ok" = 0 ] || { echo "THREAD CONVENTIONS FAIL (see above)" >&2; exit 1; }
+# Score (plan 13, G27): Gilfoyle asks Jared after his verdict; the smoke asks too (fallback), then waits for the judge's line + labels
+bz messages send --channel "$ch" --reply-to "$root" --mention "$TEAM_JARED_PUBKEY" --content "@Jared score $url" >/dev/null
+sc=""; for i in $(seq 1 18); do
+  sc=$(bz messages thread --channel "$ch" --event "$root" | jq -r --arg b "$TEAM_JARED_PUBKEY" '[.[] | select(.pubkey==$b and (.content|startswith("**Score:**")))] | last | .content // empty' | tr '\n' ' ')   # no `| head`: SIGPIPE under pipefail kills the script (plan 08 gotcha 2)
+  [ -n "$sc" ] && break; sleep 10
+done
+if [ -n "$sc" ]; then echo "PASS: score line: $sc"; else echo "FAIL: no **Score:** line from Jared within 3 min"; ok=1; fi
+lb=$(curl -fsS -H "Authorization: token ${TEAM_JARED_GITEA_TOKEN}" "$B/repos/$OWNER/$REPO/issues/$pr/labels" | jq -r 'map(.name)|join(",")')
+grep -q 'complexity/' <<<"$lb" && grep -q 'confidence/' <<<"$lb" && echo "PASS: score labels: $lb" || { echo "FAIL: score labels missing ($lb)"; ok=1; }
+[ "$ok" = 0 ] || { echo "SCORE FAIL (see above)" >&2; exit 1; }

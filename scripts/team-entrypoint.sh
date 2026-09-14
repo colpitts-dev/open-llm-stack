@@ -48,7 +48,7 @@ fi
 
 # Prompt = team norms + persona (base prompt is prepended by the harness itself)
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/${TEAM_ROLE}.md"; } > "$HOME/.prompt.md"
-sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$GILFOYLE_PUBKEY|${GILFOYLE_PUBKEY:-}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
+sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$GILFOYLE_PUBKEY|${GILFOYLE_PUBKEY:-}|g; s|\$JARED_PUBKEY|${JARED_PUBKEY:-}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
 
 # Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
 # Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).
