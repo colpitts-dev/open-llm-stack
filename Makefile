@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report context-probe model-fit context-report
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -53,3 +53,13 @@ score-sync:      ## outcome labels for scored PRs from their final state in Gite
 
 score-report:    ## complexity counts and the confidence x outcome reliability table (plan 13)
 	./scripts/score-report.sh
+
+context-probe:   ## prove every chat model's declared window through the gateway (any backend): make context-probe [M=<model>] [FULL=1] (plan 14)
+	./scripts/context-probe.sh
+
+model-fit:       ## Ollama: measure a model's window on the live backend, print its registry block: make model-fit M=<tag> [OUT=32768] [MAX_WINDOW=131072] (plan 14)
+	@test -n "$(M)" || { echo "usage: make model-fit M=<ollama tag> [OUT=<max_output_tokens>] [HEADROOM_MB=2048] [MAX_WINDOW=131072]"; exit 1; }
+	M=$(M) ./scripts/model-fit.sh
+
+context-report:  ## real prompt/completion sizes per model vs the registry caps, from LiteLLM's spend log (plan 14)
+	./scripts/context-report.sh

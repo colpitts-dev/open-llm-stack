@@ -154,20 +154,66 @@ Prefixes:
 
 Keep `execution_locus: local` and a `model_revision` string on every entry (downstream tools rely on them), and keep `litellm_settings` as shipped (`drop_params: true`, `num_retries: 0`, `request_timeout: 900`). Never register a closed-weight model or a pass-through router; `make test` fails if one appears.
 
-`max_input_tokens` is a declaration to clients, not something the backend enforces: exceed the backend's real window (`num_ctx` in Ollama, `-c` in llama.cpp) and the backend silently drops the oldest tokens. Always declare below the physical window:
+Every chat model carries the **context contract** (plan 14), the same for every backend:
 
 ```
-max_input_tokens = physical_window − max_output_tokens − 8192   (template and tool scaffolding)
+context_window     the physical window PER SLOT the backend is configured for (a declaration, proved by make context-probe)
+max_output_tokens  the output budget: 32768 for reasoning models, thinking counts as output
+max_input_tokens = context_window − max_output_tokens − margin,     margin = max(context_window / 4, 8192)
 ```
 
-| Physical window | `max_output_tokens` | `max_input_tokens` |
-|---|---|---|
-| 262144 | 16384 | 237568 |
-| 131072 | 16384 | 106496 |
-| 128000 | 16384 | 103424 |
-| 32768 | 4096 | 20480 |
+The 25% margin covers the agents' own token estimate (measured 23% under the real count on this host) plus template and tool scaffolding. Ollama entries mirror the window as `litellm_params.num_ctx` (LiteLLM forwards it per request, so the backend runs exactly that window) and carry `keep_alive: "5m"` (the GPU empties five minutes after the last call). For llama.cpp, vLLM or any other server the window is a server flag; declare it here and prove it.
 
-The physical window is an operator declaration; the stack never queries the backend for it. If the bundled Buzz agent uses a model, keep `BUZZ_AGENT_MAX_CONTEXT_TOKENS` in `.env` equal to that model's `max_input_tokens`. The team agents need no such variable: they read both caps for `TEAM_MODEL` from LiteLLM's registry when they start.
+| `context_window` | `max_output_tokens` | margin | `max_input_tokens` |
+|---|---|---|---|
+| 262144 | 32768 | 65536 | 163840 |
+| 131072 | 32768 | 32768 | 65536 |
+| 65536 | 16384 | 16384 | 32768 |
+| 32768 | 4096 | 8192 | 20480 |
+
+After every registry edit: `make reload && make context-probe` (fails on a window the backend does not honour) and `make test` (fails on the arithmetic). Never raise a window by hand: `make model-fit M=<tag>` on Ollama, or the server's flags plus the probe. If the bundled Buzz agent uses a model, keep `BUZZ_AGENT_MAX_CONTEXT_TOKENS` in `.env` equal to that model's `max_input_tokens`. The team agents need no such variable: they read both caps for `TEAM_MODEL` from LiteLLM's registry when they start.
+
+## GPU budget
+
+One 32 GB GPU, three properties for every backend: no response is ever truncated (prompt or output), the model never spills off the GPU, and the card draws nothing beyond its display floor when no job runs. The registry declares the contract; the backend is configured to honour it; `make context-probe` proves it black-box through LiteLLM; `make context-report` shows what real prompts look like against the caps. Measured on the reference host (RTX 5090, 2026-09-14) before this: 34 prompts silently cut at a 131072 window while the agent's own estimate stayed under its cap, 7 completions cut at 16384 output tokens, a 262144 window kept resident for a p95 prompt of 93 k tokens, and the model never leaving VRAM (80 W idle instead of 45 W) because a heartbeat refreshed `keep_alive` every 30 min.
+
+**Any backend.** Write the budget down and re-measure it when anything changes: weights + KV × slots + checkpoints + compute + display + headroom. Size the window to the p95 of real prompts (`make context-report`) plus the output budget, never to the model's architectural maximum. Then:
+
+```bash
+make context-probe                # every registered chat model: prompts at 50% and 100% of max_input_tokens and at max_input + max_output − 128 must come back whole
+make context-probe M=ornith-max   # one model; FULL=1 also generates max_output_tokens once (slow)
+make context-report               # per model, last 7 days: p50/p95/max prompt, max completion, over_in (prompts above the cap), at_out (completions at the cap)
+```
+
+`over_in > 0` means the margin is too small for that model's tokenizer; `at_out > 0` means the output budget is (or the model loops in thought: lower its temperature or disable thinking before raising the cap). A probe run adds one `over_in` per model on purpose (its third prompt is above the cap), so judge real work over its own interval: `SINCE="2 hours" make context-report`.
+
+**Ollama** (host container or the bundled `ollama` profile). Slots and residency are container variables, the window is per request:
+
+```bash
+# host Ollama on the reference host (outside this repo); the bundled profile reads the same names from .env
+docker run -d --name ollama --restart unless-stopped --gpus all -p 0.0.0.0:11434:11434 -v ollama:/root/.ollama \
+  -e OLLAMA_HOST=0.0.0.0:11434 -e OLLAMA_NUM_PARALLEL=3 -e OLLAMA_MAX_LOADED_MODELS=2 \
+  -e OLLAMA_FLASH_ATTENTION=1 -e OLLAMA_KV_CACHE_TYPE=q8_0 -e OLLAMA_KEEP_ALIVE=5m ollama/ollama:0.33.3
+make model-fit M=ornith-max       # loads the model at candidate windows (largest first, capped by MAX_WINDOW=131072), keeps the largest fully on the GPU within budget, prints the registry block
+```
+
+Ollama runs the model at `num_ctx × OLLAMA_NUM_PARALLEL` and, with the variable set explicitly, does not shrink an oversized window to fit: it spills to the CPU instead (`size_vram < size` in `/api/ps`), which `model-fit` reports as `spills to CPU`. Found 2026-09-14 on Ollama 0.33.3: **the qwen3.5 family (`qwen35`, `qwen35moe`) gets one slot regardless** (`model architecture does not currently support parallel requests`), so every model in the shipped registry runs `-np 1`; `OLLAMA_NUM_PARALLEL=3` costs nothing there and applies to architectures that support it. Anything that calls Ollama without LiteLLM gets the tag's own default window (262144 on the `*-max` tags) and forces a runner reload each way; recreate the tags with `PARAMETER num_ctx 131072` if that matters to you.
+
+**llama.cpp.** `-c` is the total: `LLAMACPP_CTX_SIZE = context_window × slots`, plus `-np <slots>`, `--no-context-shift` (an overflow is an HTTP 400, never a silent cut), `-ctk q8_0 -ctv q8_0`, `-fa on`. One model per process, no idle unload: stop the container to free the GPU. Register as `openai/<name>` with `context_window` = the per-slot value, then `make context-probe`.
+
+**vLLM.** `--max-model-len <context_window>`, `--max-num-seqs <slots>`, `--gpu-memory-utilization` as the OOM guard. Register as `openai/<name>`, probe.
+
+**Same repo, another backend.** Develop against a local Ollama, deploy against an intranet OpenAI-compatible server by `.env` and the registry alone: set `LLM_BASE_URL` (and `LLM_API_KEY` if the server wants one), turn each entry from `ollama_chat/<tag>` into `openai/<name>` + `api_base: <server>/v1` + `api_key: os.environ/LLM_API_KEY` with the same `model_name` (personas and `TEAM_MODEL` do not change), `context_window` from that server's flags, the embedding entry as `openai/<name>` with `mode: embedding`; then `make reload && make context-probe && make team-model M=<name> && make test`. The probe proves the window on the new server; `make team-smoke` is the behavioural acceptance test there (tool-call and thinking parsers differ per server; fix persona misses in the server's template flags, never in personas).
+
+**Idle.** Jared's heartbeat is off by default (`TEAM_HEARTBEAT_SECONDS=0`): one tick is up to 12 shell commands, each a full-prefill LLM call, every interval, and each call refreshes `keep_alive`. Set it to `7200` when you want proactive triage, then `docker compose up -d jared`.
+
+**Power cap** (opt-in, host setting, lost at reboot). Bursts reach 570 W in prefill; the card's floor is 400 W:
+
+```bash
+sudo nvidia-smi -pl 450          # bursts capped at 450 W (this card: min 400, max 600); lost at reboot
+# persist: /etc/systemd/system/nvidia-power-limit.service
+# [Unit]\nDescription=GPU power limit\nAfter=nvidia-persistenced.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/nvidia-smi -pl 450\n[Install]\nWantedBy=multi-user.target
+```
 
 ## Open WebUI (port 3001)
 
@@ -289,7 +335,7 @@ Expect, in that thread: `picked up: <plan>`, then the PR URL with what changed a
 
 A request for a new project works the same way: `@Dinesh create a repository named wordcount with a function count_words(text) and a test, and open a pull request.` Dinesh creates `wordcount` in the org through the API (a member of the `agents` team may create repos there, and only there), puts the CI workflow (`agents/ci-python.yaml`, mounted into his container) and a `pyproject.toml` in his first commit so Laurie can run the tests, opens the PR, and then protects `main` with the same rule the bootstrap uses (CI check plus one approval, no direct push, merge only by `GITEA_ADMIN_USER`). Measured on the reference host: `@Dinesh create a repository named hello-py with a Python package, a pytest test, CI, and open a pull request` gave `piedpiper/hello-py` with the workflow, `pyproject.toml`, package and test in the first commit, PR #1 open after ~50 s, CI green, branch protection set by Dinesh, and Gilfoyle's `APPROVED` ~40 s after the review request.
 
-Jared and Erlich live in channels rather than threads: add Jared to a channel named `triage` (he posts status there on his heartbeat; set `TEAM_HEARTBEAT_SECONDS=0` to disable it, `docker compose up -d jared` after changing it) and Erlich to `#general`.
+Jared and Erlich live in channels rather than threads: add Jared to a channel named `triage` (he posts status there on his heartbeat when `TEAM_HEARTBEAT_SECONDS` is set; off by default since plan 14, see "GPU budget"; `docker compose up -d jared` after changing it) and Erlich to `#general`.
 
 Prove the loop with `make team-smoke` (also run by `make test` when the profile is on): the throwaway smoke identity creates a job channel, adds Dinesh and Gilfoyle, asks for a `subtract_<n>` function in `demo-calc`, waits for a new PR by `dinesh` (numbered above any earlier one; up to 15 min), for its `ci / test (pull_request)` status to be `success` (up to 10 min), then asks Gilfoyle for a review and waits for a submitted (non-pending) one (up to 10 min). It ends with `TEAM SMOKE PASS: PR #<n>, CI success, review <state>`. Measured on the reference host with `ornith-max`, Jared's heartbeat running on the same GPU slot: PR opened 70 s after the mention (10–20 s with the GPU idle), CI green ~25 s after the push, `APPROVED` review ~30 s after the request, 96 s in total. Merge that PR in Gitea yourself. If it fails at "no PR", read `docker compose logs dinesh`; a single silent turn can be re-driven by mentioning Dinesh once more in the same thread.
 
@@ -307,7 +353,7 @@ docker compose logs --since 2m dinesh | grep model=    # model=qwen3.8-max conte
 make team-model M=nope-model     # prints "not registered in proxy/config.yaml"; make exits 2
 ```
 
-Measured 2026-09-13: `ornith-max`, `qwen3.8-max` and `laguna-max` publish multi-step results; `qwen3.6-max` does not, so it is a poor choice for the team. On `qwen3.8-max` Dinesh answered a mention in ~20 s. The four agents plus CI share one GPU slot on the host Ollama (`OLLAMA_NUM_PARALLEL=1`) by queueing; throughout the smoke run `docker exec ollama ollama ps` showed `100% GPU`.
+Measured 2026-09-13: `ornith-max`, `qwen3.8-max` and `laguna-max` publish multi-step results; `qwen3.6-max` does not, so it is a poor choice for the team. On `qwen3.8-max` Dinesh answered a mention in ~20 s. The agents plus CI share one GPU slot on the host Ollama by queueing (Ollama 0.33.3 gives the qwen3.5 family a single slot whatever `OLLAMA_NUM_PARALLEL` says, see "GPU budget"); throughout the smoke run `docker exec ollama ollama ps` showed `100% GPU`.
 
 **Using your own Gitea.** The same scripts drive an instance you already run (on the LAN behind a private CA, or on the internet with a public certificate). Switch with `.env` only, after `make down`:
 
@@ -398,7 +444,7 @@ docker run --rm -v open-llm-stack_gitea-data:/data -v "$PWD":/backup alpine tar 
 | `make down` | `docker compose down` (volumes kept) |
 | `make ps` | `docker compose ps` |
 | `make logs S=<service>` | `docker compose logs -f <service>`, e.g. `make logs S=litellm` |
-| `make test` | `./scripts/smoke-test.sh`: one section per profile in `COMPOSE_PROFILES` (litellm, openwebui, buzz, gitea, gitea-runner; `buzz-agent` runs `scripts/buzz-smoke.sh`, `team` runs `scripts/team-smoke.sh`) |
+| `make test` | `./scripts/smoke-test.sh` (chat round-trip on `TEAM_MODEL` only; `SMOKE_CHAT_MODELS=all` for every chat model, one model swap each): one section per profile in `COMPOSE_PROFILES` (litellm, openwebui, buzz, gitea, gitea-runner; `buzz-agent` runs `scripts/buzz-smoke.sh`, `team` runs `scripts/team-smoke.sh`) |
 | `make reload` | `docker compose restart litellm`, after editing `proxy/config.yaml` |
 | `make gitea-bootstrap` | `./scripts/bootstrap-gitea.sh`: admin user + API token into `.env` (`--rotate` via the script directly) |
 | `make team-bootstrap` | `./scripts/bootstrap-team.sh`: Gitea users + tokens for the agents, org `TEAM_GITEA_ORG` with team `agents`, runner token, fixture repo `<org>/demo-calc` with CI and branch protection (idempotent; migrates an older bootstrap: re-mints under-scoped tokens, transfers `demo-calc` into the org) |
@@ -408,6 +454,9 @@ docker run --rm -v open-llm-stack_gitea-data:/data -v "$PWD":/backup alpine tar 
 | `make dinesh-runtime R=goose\|buzz-agent` | switch Dinesh's runtime: rewrites `TEAM_DINESH_RUNTIME` + `TEAM_DINESH_IMAGE`, force-recreates `dinesh` |
 | `make score-sync` | outcome labels for scored PRs from their final state in Gitea (plan 13) |
 | `make score-report` | complexity counts and the confidence × outcome reliability table |
+| `make context-probe [M=<model>] [FULL=1]` | prove every chat model's declared window through the gateway, any backend (plan 14) |
+| `make model-fit M=<tag> [OUT=32768] [MAX_WINDOW=131072]` | Ollama: measure a model's window on the live backend, print its registry block |
+| `make context-report` | real prompt/completion sizes per model vs the registry caps, from LiteLLM's spend log |
 
 Scripts you can also call directly: `./scripts/preflight.sh` (backend reachability from inside litellm), `./scripts/check-ports.sh`, `./scripts/buzz-smoke.sh` (mention the bundled agent, expect a reply), `./scripts/team-smoke.sh`.
 

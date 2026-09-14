@@ -13,8 +13,19 @@ test_litellm() {
   curl -fsS -H "$auth" "$base/v1/models" | jq -r '.data[].id' | sort
   curl -fsS -H "$auth" "$base/v1/model/info" \
     | jq -r '.data[] | "\(.model_name)\t\(.model_info.max_input_tokens)\t\(.model_info.execution_locus)"'
-  echo "--- litellm: chat round-trip (every mode:chat model; reasoning models need a generous max_tokens)"
-  for m in $(curl -fsS -H "$auth" "$base/v1/model/info" | jq -r '.data[] | select(.model_info.mode=="chat") | .model_name'); do
+  echo "--- litellm: context contract (context_window >= max_input_tokens + max_output_tokens on every chat model, plan 14)"
+  curl -fsS -H "$auth" "$base/v1/model/info" | jq -r '.data[] | select(.model_info.mode=="chat") | "\(.model_name) \(.model_info.context_window // 0) \(.model_info.max_input_tokens) \(.model_info.max_output_tokens) \(.litellm_params.model) \(.litellm_params.num_ctx // 0)"' \
+    | while read -r m win in out lm ctx; do
+        [ "$win" -gt 0 ] || fail "$m: no context_window in model_info (Ollama: make model-fit M=<tag>; others: declare your server's window)"
+        [ $(( in + out )) -le "$win" ] || fail "$m: max_input_tokens + max_output_tokens ($in + $out) exceeds context_window $win"
+        case "$lm" in ollama_chat/*) [ "$ctx" = "$win" ] || fail "$m: litellm_params.num_ctx ($ctx) must equal context_window ($win)" ;; esac
+        echo "$m: window $win >= $in + $out"
+      done
+  local chat_models; chat_models=${SMOKE_CHAT_MODELS:-${TEAM_MODEL:-}}
+  [ -n "$chat_models" ] || chat_models=$(curl -fsS -H "$auth" "$base/v1/model/info" | jq -r '[.data[] | select(.model_info.mode=="chat") | .model_name][0]')
+  [ "$chat_models" = all ] && chat_models=$(curl -fsS -H "$auth" "$base/v1/model/info" | jq -r '.data[] | select(.model_info.mode=="chat") | .model_name')
+  echo "--- litellm: chat round-trip (SMOKE_CHAT_MODELS=${SMOKE_CHAT_MODELS:-${TEAM_MODEL:-first chat model}}; all = every chat model, one model swap each; reasoning models need a generous max_tokens)"
+  for m in $chat_models; do
     printf '%s -> ' "$m"
     curl -fsS "$base/v1/chat/completions" -H "$auth" -H 'Content-Type: application/json' \
       -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_tokens\":512}" \

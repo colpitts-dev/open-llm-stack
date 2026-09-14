@@ -2,9 +2,15 @@
 # to match the models YOUR backend actually serves. This sample registers the tags present on the
 # project's reference host (Ollama). THE REGISTRY IS HAND-MAINTAINED: nothing discovers models.
 #
-# max_input_tokens = physical_window - max_output_tokens - 8192   (template/tool scaffolding)
-# The physical window (num_ctx in Ollama, -c in llama.cpp) is set at the BACKEND, not here, and is
-# not enforced anywhere: exceed it and the backend silently drops the oldest tokens.
+# The context contract (plan 14), the same for every backend:
+#   context_window     physical window PER SLOT the backend is configured for (model_info; a declaration, verified by make context-probe)
+#   max_output_tokens  output budget (32768 for reasoning models: thinking counts)
+#   max_input_tokens = context_window - max_output_tokens - margin,   margin = max(context_window / 4, 8192)
+# The 25% margin covers the agents' token estimate (measured 23% under the real count) plus template/tool scaffolding.
+# The backend must honour context_window: Ollama entries mirror it as litellm_params.num_ctx (forwarded per request) and
+# carry keep_alive ("5m": idle GPU between jobs); llama.cpp is -c <window x slots> -np <slots>; vLLM --max-model-len.
+# Ollama: `make model-fit M=<tag>` measures the window on the live backend and prints this block. Any backend:
+# `make context-probe` proves the declaration through the gateway; `make context-report` shows real use against the caps.
 #
 # Prefixes: ollama_chat/<tag> for Ollama chat models (applies the model's chat template; plain
 # ollama/ degrades tool calling); ollama/<tag> for Ollama embeddings; openai/<name> + api_base for
@@ -16,45 +22,57 @@ model_list:
     litellm_params:
       model: ollama_chat/qwen3.6-max
       api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-14: 21288 MiB on the GPU (one slot: qwen3.5-family models get no parallel slots on Ollama 0.33.3)
+      keep_alive: "5m"
     model_info:
       mode: chat
-      max_input_tokens: 237568        # 262144 - 16384 - 8192
-      max_output_tokens: 16384
+      context_window: 131072          # per slot; sized to real use (p95 prompt 93k + 32k output), not the tag's 262144 maximum
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768
       supports_vision: true
-      model_revision: "ollama:qwen3.6-max:2026-09-12"
+      model_revision: "ollama:qwen3.6-max:2026-09-14"
       execution_locus: local
 
   - model_name: ornith-max
     litellm_params:
       model: ollama_chat/ornith-max
       api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-14: 22010 MiB on the GPU (one slot: qwen3.5-family models get no parallel slots on Ollama 0.33.3)
+      keep_alive: "5m"
     model_info:
       mode: chat
-      max_input_tokens: 237568
-      max_output_tokens: 16384
-      model_revision: "ollama:ornith-max:2026-09-12"
+      context_window: 131072          # per slot; sized to real use (p95 prompt 93k + 32k output), not the tag's 262144 maximum
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768
+      model_revision: "ollama:ornith-max:2026-09-14"
       execution_locus: local
 
   - model_name: laguna-max
     litellm_params:
       model: ollama_chat/laguna-max
       api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-14: 21114 MiB on the GPU (one slot: qwen3.5-family models get no parallel slots on Ollama 0.33.3)
+      keep_alive: "5m"
     model_info:
       mode: chat
-      max_input_tokens: 237568
-      max_output_tokens: 16384
-      model_revision: "ollama:laguna-max:2026-09-12"
+      context_window: 131072          # per slot; sized to real use (p95 prompt 93k + 32k output), not the tag's 262144 maximum
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768
+      model_revision: "ollama:laguna-max:2026-09-14"
       execution_locus: local
 
   - model_name: qwen3.8-max
     litellm_params:
       model: ollama_chat/qwen3.8-max
       api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-14: 17043 MiB on the GPU (one slot: qwen3.5-family models get no parallel slots on Ollama 0.33.3)
+      keep_alive: "5m"
     model_info:
       mode: chat
-      max_input_tokens: 106496        # operator capped this tag's window at 131072 for VRAM headroom
-      max_output_tokens: 16384
-      model_revision: "ollama:qwen3.8-max:2026-09-12"
+      context_window: 131072          # per slot; sized to real use (p95 prompt 93k + 32k output), not the tag's 262144 maximum
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768
+      model_revision: "ollama:qwen3.8-max:2026-09-14"
       execution_locus: local
 
   - model_name: embed
@@ -69,15 +87,17 @@ model_list:
   # Also present on the reference host -- uncomment to register (same window formula applies):
   # ornith-1.5:35b, laguna-xs-2.1, qwen3.8:27b, qwen3.6:35b (chat), qwen3-embedding:0.6b (embedding)
 
-  # --- llama.cpp / vLLM / LM Studio (OpenAI-compatible) example ---
+  # --- llama.cpp / vLLM / LM Studio (OpenAI-compatible) example: the window is a SERVER flag, declared here and probed ---
   # - model_name: my-gguf-model
   #   litellm_params:
   #     model: openai/my-gguf-model
   #     api_base: http://llamacpp:8080/v1     # bundled profile; or http://host.docker.internal:8080/v1
-  #     api_key: sk-unused                     # the client requires *a* key; the server ignores it
+  #     api_key: sk-unused                     # the client requires *a* key; an unauthenticated server ignores it.
+  #                                            # Server with auth: api_key: os.environ/LLM_API_KEY (set LLM_API_KEY in .env)
   #   model_info:
   #     mode: chat
-  #     max_input_tokens: 20480               # 32768 - 4096 - 8192 -- match your -c
+  #     context_window: 32768                 # llama.cpp: -c 98304 -np 3 gives 32768 per slot (LLAMACPP_CTX_SIZE = window x slots)
+  #     max_input_tokens: 20480               # 32768 - 4096 - 8192
   #     max_output_tokens: 4096
   #     execution_locus: local
 

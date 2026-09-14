@@ -84,6 +84,9 @@ BIND_HOST=127.0.0.1
 #     host process on 0.0.0.0 -> http://host.docker.internal:<port> (default below, matches Ollama)
 #     bundled profile         -> http://ollama:11434  or  http://llamacpp:8080
 LLM_BASE_URL=http://host.docker.internal:11434
+# Key for an OpenAI-compatible server that requires one (intranet vLLM, LM Studio with auth). Blank for Ollama and open servers;
+# registry entries reference it as api_key: os.environ/LLM_API_KEY
+LLM_API_KEY=
 
 # --- LiteLLM (profile: litellm) --------------------------------------------------------------
 LITELLM_PORT=3000
@@ -134,7 +137,7 @@ BUZZ_AGENT_PUBKEY=
 BUZZ_AGENT_NAME=stack-agent
 BUZZ_AGENT_MODEL=ornith-max    # a model_name from proxy/config.yaml. Verified 2026-09-12: ornith-max, laguna-max and
                                # qwen3.8-max publish their results; qwen3.6-max tends to end long turns in discarded text.
-BUZZ_AGENT_MAX_CONTEXT_TOKENS=237568   # keep equal to that model's max_input_tokens in proxy/config.yaml
+BUZZ_AGENT_MAX_CONTEXT_TOKENS=65536    # keep equal to that model's max_input_tokens in proxy/config.yaml (plan 14: 131072 window)
 # Agent instructions appended to the harness base prompt. Verified 2026-09-12: without an explicit
 # publish rule, local models answer in text the harness never posts (the reply shows only in the app's activity log).
 BUZZ_AGENT_INSTRUCTIONS='Your text output is NOT delivered to anyone; humans only see messages you publish with the buzz CLI. For every request you MUST end by running: buzz messages send --channel <channel-uuid from the context block> --content "<your answer or a summary of what you did>". If you created or changed files, first run: buzz upload file --file <path> and include the returned URL in that message. Never end a turn without publishing.'
@@ -173,7 +176,7 @@ TEAM_MAX_CONTEXT_TOKENS=
 # Comma-separated 64-hex pubkeys of the humans the agents obey (Richard). Find yours in the Buzz app profile,
 # or from a message you posted: `buzz messages get --channel <uuid>` shows `pubkey`. First entry is the agents' owner.
 TEAM_ALLOWLIST=
-TEAM_HEARTBEAT_SECONDS=1800    # Jared's proactive triage tick; 0 disables
+TEAM_HEARTBEAT_SECONDS=0       # Jared's proactive triage tick (plan 08). 0 = off (default since plan 14: a tick is ~13 LLM calls at full prefill every interval and keeps the model in VRAM). 7200 when you want it.
 TEAM_NARRATE=off               # plan 11 progress mirror: off | tools (state-changing shell commands) | both (+ model narration); milestones are persona posts and always on
 TEAM_DINESH_RUNTIME=buzz-agent # plan 12: buzz-agent | goose; switch with make dinesh-runtime R=…, which also rewrites TEAM_DINESH_IMAGE
 TEAM_DINESH_IMAGE=ghcr.io/block/buzz-sprig:sha-e17cdd9   # image behind the dinesh service (open-llm-stack/goose-agent:1.50.0 for goose)
@@ -203,6 +206,10 @@ GITEA_RUNNER_NAME=laurie
 # --- Optional backends ----------------------------------------------------------------------
 # LLAMACPP_MODEL_FILE=your-model.gguf   # file inside ./models/, llamacpp profile only
 # LLAMACPP_CTX_SIZE=0                   # 0 = read from the model file
+# Ollama tuning (bundled `ollama` profile). A host Ollama needs the same variables on its own container: README "GPU budget".
+# OLLAMA_NUM_PARALLEL=3     # slots: Dinesh, Gilfoyle and Jared talk concurrently during a job; the rest queue
+# OLLAMA_KEEP_ALIVE=5m      # unload 5 min after the last call; the registry's keep_alive does the same for calls through LiteLLM
+# llama.cpp profile: LLAMACPP_CTX_SIZE = context_window x slots, and add -np <slots> --no-context-shift to its command (README)
 ```
 
 Rules:
@@ -328,7 +335,7 @@ Source: `github.com/block/buzz` (Apache-2.0). `sha-e17cdd9` = main commit 2026-0
 
 ### 5.7 This host (the validation machine)
 
-- Docker Compose v5.1.3. An Ollama container named `ollama` (outside this project) listens on `0.0.0.0:11434`, so `LLM_BASE_URL=http://host.docker.internal:11434` works. Models present (`ollama list`, 2026-09-12): `qwen3.6-max`, `ornith-max`, `laguna-max`, `qwen3.8-max`, `embed` (qwen3 0.6B embedding, num_ctx 512, 1024-dim), plus `ornith-1.5:35b`, `laguna-xs-2.1`, `qwen3.8:27b`, `qwen3.6:35b`, `qwen3-embedding:0.6b`. All chat models report an architectural context length of 262144.
+- Docker Compose v5.1.3. An Ollama container named `ollama` (outside this project; `ollama/ollama:0.33.3`, env `OLLAMA_HOST=0.0.0.0:11434 OLLAMA_NUM_PARALLEL=3 OLLAMA_MAX_LOADED_MODELS=2 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_KEEP_ALIVE=5m` since plan 14, volume `ollama`, `--gpus all`, `restart unless-stopped`) listens on `0.0.0.0:11434`, so `LLM_BASE_URL=http://host.docker.internal:11434` works. RTX 5090 32 GB, driver 580.126.18; power limit 600 W (min 400), `nvidia-persistenced` active. Models present (`ollama list`, 2026-09-12): `qwen3.6-max`, `ornith-max`, `laguna-max`, `qwen3.8-max`, `embed` (qwen3 0.6B embedding, num_ctx 512, 1024-dim), plus `ornith-1.5:35b`, `laguna-xs-2.1`, `qwen3.8:27b`, `qwen3.6:35b`, `qwen3-embedding:0.6b`. All chat models report an architectural context length of 262144.
 - Ports 3000–3003 were held by the operator's `buzz-prod` and `open-llm-runner` compose projects; the operator stops those before execution. `scripts/check-ports.sh` guards this.
 - Already pulled here: every image in §1 except `ghcr.io/ggml-org/llama.cpp:server-b10920` and `ollama/ollama:0.34.0`. `docker pull` works on this host.
 - MinIO images must be pulled from **quay.io**; Docker Hub returned `denied` for anonymous manifest access to `minio/minio` and `minio/mc` on 2026-09-12.
@@ -363,7 +370,7 @@ Profiles `gitea-runner` (service `gitea-runner`, "Laurie") and `team` (services 
 - buzz-acp flags used (all in `buzz-acp --help` of the pinned image): `BUZZ_ACP_SYSTEM_PROMPT_FILE`, `BUZZ_ACP_SESSION_POLICY=thread` (dinesh, gilfoyle) or `channel` (jared, erlich), `BUZZ_ACP_RESPOND_TO=allowlist` with `BUZZ_ACP_RESPOND_TO_ALLOWLIST=${TEAM_ALLOWLIST},${TEAM_SMOKE_PUBKEY},<the four TEAM_*_PUBKEY>` (teammates included: gotcha 4), `BUZZ_ACP_HEARTBEAT_INTERVAL` + `BUZZ_ACP_HEARTBEAT_PROMPT_FILE` (jared only), `BUZZ_ACP_AGENTS=1`, `BUZZ_ACP_DISPLAY_NAME`. buzz-agent: `BUZZ_AGENT_REQUIRE_REPLY=1` (present in the pinned binary; rerolls a turn that ends without a publish, at most twice; advisory, not a guarantee).
 - `TEAM_ALLOWLIST` holds the operator's 64-hex pubkey (first entry = the agents' owner). Find it in the Buzz app profile, or from a message you posted: `buzz messages get --channel <uuid>` shows `pubkey`. On this host it is also the pubkey whose kind-0 profile carries the git user's name.
 - **One-variable model switch.** At start the entrypoint reads `max_input_tokens`/`max_output_tokens` for `OPENAI_COMPAT_MODEL` (= `TEAM_MODEL`) from `GET /v1/model/info` and exports `BUZZ_AGENT_MAX_CONTEXT_TOKENS`/`BUZZ_AGENT_MAX_OUTPUT_TOKENS`, logging `model=<name> context=<in> output=<out>`. Verified: `ornith-max` → `237568/16384`, `qwen3.8-max` → `106496/16384`. A name not in the registry exits 1 (`model '<name>' is not in proxy/config.yaml`). `make team-model M=<name>` checks the name against `/v1/models` first, rewrites `TEAM_MODEL` in `.env`, and re-creates the four containers. `TEAM_MAX_CONTEXT_TOKENS` (blank by default) only forces a smaller input window.
-- Model: `ornith-max` by default (§3 measurements). The host Ollama runs `OLLAMA_NUM_PARALLEL=1`; four agents + CI queue on one GPU slot. Under the team smoke, `docker exec ollama ollama ps` stayed at `100% GPU` throughout (G13). A local model does not know its own name (Dinesh on `qwen3.8-max` called itself "Claude"): read `TEAM_MODEL` or the `model=` log line, never ask the agent.
+- Model: `ornith-max` by default (§3 measurements). The host Ollama runs `OLLAMA_NUM_PARALLEL=3` since plan 14, but the qwen3.5 family gets one slot regardless (§5.15); agents + CI queue on it. Under the team smoke, `docker exec ollama ollama ps` stayed at `100% GPU` throughout (G13). A local model does not know its own name (Dinesh on `qwen3.8-max` called itself "Claude"): read `TEAM_MODEL` or the `model=` log line, never ask the agent.
 - Measured 2026-09-13 (final clean run, `ornith-max`, Jared's heartbeat turn running concurrently on the same GPU slot): each agent `presence set to online` ~1 s after its relay wait; fixture CI on `main` `success` within ~1 min of the runner registering; mention → Dinesh PR opened in 70 s (10–20 s with the GPU idle); `ci / test (pull_request)` `success` ~25 s after push; Gilfoyle `APPROVED` ~30 s after the review request; whole `make team-smoke` 96 s. Erlich answered a "summarise this channel" mention in ~10 s. Jared with `TEAM_HEARTBEAT_SECONDS=60` logged `heartbeat_fired`, opened a heartbeat session, found the `triage` channel UUID, queried Gitea for open PRs/issues and, with nothing to report, posted nothing. After `make team-model M=qwen3.8-max` Dinesh answered a mention in ~20 s.
 
 **Gotchas found during execution (both verified).**
@@ -434,17 +441,30 @@ The team works against **either** the bundled Gitea or one you already run, sele
 - **Approvals must be official (found 2026-09-14).** Gitea counts an approval towards `required_approvals` only from a user with write access or on the rule's approvals whitelist, and the `reviewers` team has `repo.code: read` (§5.11), so since plan 10 Gilfoyle's approvals did not count and every merge needed a human approval too (`405 Does not have enough approvals`). The protection rule now carries `enable_approvals_whitelist: true`, `approvals_whitelist_username: ["gilfoyle"]`, `approvals_whitelist_teams: ["reviewers"]` (note the singular `_username` field for users); the bootstrap reconciles it on every org repo and the template. Official-ness is stamped when the review is submitted: existing approvals stay non-official, a fresh one is needed.
 - **Principles.** Two independent axes; small ordinal scales with written anchors; raw dimensions stored next to the score; the judge is neither the builder nor the reviewer, with a fixed rubric and strict, script-validated output; CI red is a hard cap; agents never see the formula; never gate a merge on a score.
 
+### 5.15 Context contract and GPU budget (plan 14; verified 2026-09-14)
+
+- **The contract.** Every chat model in `proxy/config.yaml` declares `model_info.context_window` (the physical window per slot the backend is configured for), `max_output_tokens` (32768 for reasoning models: thinking counts as output) and `max_input_tokens = context_window − max_output_tokens − max(context_window/4, 8192)`. The 25% margin covers buzz-agent's token estimate (measured ≥ 23% under the backend's count) plus template and tool scaffolding. Ollama entries mirror the window as `litellm_params.num_ctx` and carry `keep_alive: "5m"`; both are forwarded per request (`OllamaChatConfig` in LiteLLM 1.89.7; verified: after `make reload` and one completion `/api/ps` shows `context_length 131072`, `expires_at` = now + 5 min, and the runner cmdline `-c 131072 -np 1`). `/v1/model/info` exposes custom `litellm_params` keys (`num_ctx`) and custom `model_info` keys (`context_window`), so the smoke checks the arithmetic and `num_ctx == context_window` from the gateway. For `openai/` entries (llama.cpp, vLLM, LM Studio) the window is a server flag (`-c window × slots -np slots --no-context-shift`; `--max-model-len --max-num-seqs`), declared here and probed.
+- **Why (found 2026-09-14, before this plan).** 34 generations on `qwen3.8-max` ended `n_tokens = 131071, truncated = 1` while the agent's estimate stayed under its 106496 cap; 7 completions hit `max_output_tokens` 16384; 262144-token windows for a p95 prompt of 93 k (72% of 3794 calls under 32 k); `OLLAMA_KEEP_ALIVE=30m` refreshed by the heartbeat kept the model resident (80 W idle vs 45 W empty); nothing verified the declared window.
+- **Verification is black-box through the gateway.** `scripts/context-probe.sh` (`make context-probe [M=…] [FULL=1]`) calibrates the tokenizer on a fixed line (two sizes give slope and offset exactly: 11 tokens per line, 18 fixed on the qwen3.5 family) and sends prompts at 50% and 100% of `max_input_tokens` and at `max_input + max_output − 128`; each must return HTTP 200 with `usage.prompt_tokens` within 16 of what was sent. Ollama past `num_ctx` truncates silently and reports fewer tokens (negative case, verified: `context_window = max_input_tokens = 131072` on `qwen3.8-max` → `50%` ok at 65534, `100%` FAIL `got 65538 length`: Ollama 0.33.3 cut the prompt to half the window at its own layer, no `truncated = 1` in the llama-server log); llama.cpp and vLLM reject with an error. Prompts go to `jq` by `--rawfile`, not `--arg`: a 100 k-token body is ~600 kB, past the kernel's per-argument limit.
+- **Sizing (Ollama).** `scripts/model-fit.sh` (`make model-fit M=<tag> [OUT=32768] [MAX_WINDOW=131072]`) unloads everything, measures what the display server holds, loads the model at candidate windows through the backend and keeps the largest that stays fully on the GPU within `total − other − HEADROOM_MB` (2048), then prints the registry block. Windows are sized to real use (p95 + output budget), so the search is capped by `MAX_WINDOW`: at one slot the 262144 maximum "fits" too (ornith-max 23754 MiB) and only costs VRAM and prefill. Measured 2026-09-14 at 131072: ornith-max 22010, qwen3.6-max 21288, laguna-max 21114, qwen3.8-max 17043 MiB; laguna-max spills to the CPU at 196608 and 262144 (its MTP draft model).
+- **Slots.** Ollama runs `-c num_ctx × OLLAMA_NUM_PARALLEL -np OLLAMA_NUM_PARALLEL` and, with the variable set, does not shrink an oversized window: it spills (`size_vram < size`). **Ollama 0.33.3 gives the qwen3.5 family one slot regardless**: `sched.go: model architecture does not currently support parallel requests architecture=qwen35moe` (and `qwen35`), so every model in the shipped registry runs `-np 1` whatever the variable says. `OLLAMA_NUM_PARALLEL=3` stays the documented value (harmless here, right for architectures that support it); the per-agent prompt-cache design of this plan (G31) is therefore not reachable on this backend for these models, and hybrid re-prefill stays architectural: any prompt that is not append-only to the slot's last checkpoint costs a full prefill.
+- **Residency and idle.** `keep_alive: "5m"` per request plus `OLLAMA_KEEP_ALIVE=5m` on the container (backstop for direct callers). `TEAM_HEARTBEAT_SECONDS` defaults to 0: a tick is up to 12 shell commands, each a full-prefill call, and each refreshes `keep_alive`. Direct callers get the tag's own window (262144 on the `*-max` tags) and force a runner reload each way.
+- **Real use.** `scripts/context-report.sh` (`make context-report [SINCE="7 days"]`) reads LiteLLM's spend log per model: calls, p50/p95/max prompt, max completion, `over_in` (prompts above `max_input_tokens`: compaction came late) and `at_out` (completions at `max_output_tokens`: truncated). The registry's windows are re-sized from it. The probe's third case (`max_input + max_output − 128`) is above `max_input_tokens` by design, so a window that includes a probe run shows `over_in ≥ 1` per model: read the report over the interval of the work you are judging (`SINCE="<n> seconds"`).
+- **Smoke.** `test_litellm` fails on any chat model without `context_window`, on `max_input + max_output > context_window`, and on an Ollama entry whose `num_ctx ≠ context_window`; the chat round-trip covers `TEAM_MODEL` only by default (`SMOKE_CHAT_MODELS=all` for every model, one 25 GB model swap each).
+- **Power.** 45 W empty (three displays pin the memory clock), ≈ 80 W with a model resident, 470–570 W in prefill; limit 600 W, minimum 400 W. A cap (`nvidia-smi -pl 450`, persisted by a systemd oneshot) is an opt-in host setting; `sudo` on the reference host needs a password, so the measurement (G34) is an operator step.
+- **Backend-agnostic by construction.** Above the gateway nothing changes between backends: the registry fields, the probe, the report, the agents' caps. Switching the team backend is the server's window flags + `openai/<name>` entries with `context_window` + `make context-probe` + `make team-smoke`. Ollama stays the default because idle unload matters here; write the next plan when `context-report` shows `over_in > 0` under the new caps, or when per-model slots are needed (llama.cpp per model with `-np`, or vLLM).
+
 ## 6. Model registry sample (`proxy/config.yaml.example`)
 
-Registers the operator's tuned `*-max` tags and `embed` (validated in the reference project on the same host), with the other locally present tags as commented entries. Numbers follow the reserve formula; the physical window is an operator declaration, never queried.
+Registers the operator's tuned `*-max` tags and `embed` (validated in the reference project on the same host), with the other locally present tags as commented entries. Numbers follow the context contract (§5.15): the window is declared per slot, mirrored to the backend (`num_ctx`), and proved through the gateway (`make context-probe`); sized by `make model-fit` on 2026-09-14.
 
-| model_name | litellm model | mode | max_input_tokens | max_output_tokens | note |
-|---|---|---|---|---|---|
-| qwen3.6-max | ollama_chat/qwen3.6-max | chat | 237568 | 16384 | 262144 window; supports_vision |
-| ornith-max | ollama_chat/ornith-max | chat | 237568 | 16384 | |
-| laguna-max | ollama_chat/laguna-max | chat | 237568 | 16384 | |
-| qwen3.8-max | ollama_chat/qwen3.8-max | chat | 106496 | 16384 | window capped at 131072 by the operator |
-| embed | ollama/embed | embedding | — | — | |
+| model_name | litellm model | mode | context_window | max_input_tokens | max_output_tokens | note |
+|---|---|---|---|---|---|---|
+| qwen3.6-max | ollama_chat/qwen3.6-max | chat | 131072 | 65536 | 32768 | `num_ctx: 131072`, `keep_alive: "5m"`; supports_vision; 21288 MiB |
+| ornith-max | ollama_chat/ornith-max | chat | 131072 | 65536 | 32768 | same knobs; 22010 MiB |
+| laguna-max | ollama_chat/laguna-max | chat | 131072 | 65536 | 32768 | same knobs; 21114 MiB (spills to CPU at 196608+: MTP draft model) |
+| qwen3.8-max | ollama_chat/qwen3.8-max | chat | 131072 | 65536 | 32768 | same knobs; dense 27B, 17043 MiB |
+| embed | ollama/embed | embedding | — | — | — | |
 
 Every entry carries `execution_locus: local` and a `model_revision` string, so downstream tools keep the reference project's contract.
 
@@ -483,3 +503,9 @@ Every entry carries `execution_locus: local` and a `model_revision` string, so d
 | G26 | Scoring path without an LLM | smoke `test_team_score`: bad rubric rejected (exit 2); canned rubric → `complexity/1` + `confidence/high` labels and a `**Score:**` comment on the newest demo-calc PR |
 | G27 | Judge in the loop | team smoke: after the review, `**Score:**` line from jared in the job thread and both score labels on the PR within 3 min; two consecutive passes |
 | G28 | Outcomes | `make score-sync` labels a closed smoke PR `outcome/closed` and a merged one `outcome/merged-as-is`; `make score-report` prints the reliability table |
+| G29 | Context contract | smoke: every chat model has `context_window ≥ max_input_tokens + max_output_tokens` and Ollama entries `num_ctx == context_window`; on the reference host the runner runs the declared window fully on the GPU (`memory.used` ≤ 29 500 MiB through a team smoke) |
+| G30 | No truncation | `make context-probe` passes for every registered chat model; two consecutive team smokes with zero `truncated = 1` in the backend log; `make context-report` `over_in 0`, `at_out 0` |
+| G31 | Cache reuse | prefilled tokens per team smoke at least halved vs the baseline; `f_sim_best ≥ 0.9` on agent turns (not reachable on Ollama 0.33.3 for the qwen3.5 family: one slot, §5.15) |
+| G32 | Idle | six minutes after a smoke: no model resident, power ≤ 50 W; no chat completion in LiteLLM's log for 30 min (heartbeat off) |
+| G33 | Sizing and a probe that can fail | `make model-fit M=ornith-max` reproduces the registry's window; `qwen3.8-max` sized and recorded; the probe on `max_input_tokens = context_window` fails |
+| G34 | Power cap (opt-in, measured once) | decode tok/s at 450 W within 10% of 600 W |
