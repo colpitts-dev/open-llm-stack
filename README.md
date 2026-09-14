@@ -215,6 +215,44 @@ sudo nvidia-smi -pl 450          # bursts capped at 450 W (this card: min 400, m
 # [Unit]\nDescription=GPU power limit\nAfter=nvidia-persistenced.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/nvidia-smi -pl 450\n[Install]\nWantedBy=multi-user.target
 ```
 
+## What local inference costs
+
+Local models are not free: the card draws 470–570 W in prefill, about 80 W with a model resident, 45 W empty, and the gateway's spend log says `$0.00`. Plan 15 meters the energy and prices it with your tariff. Four lines in `.env`:
+
+```
+POWER_COST_PER_KWH=18.13       # cents per kWh; blank = accounting off
+POWER_PROBES=nvml              # nvml = every NVIDIA card; add hwmon:<sensor> for a PSU with telemetry (whole machine); APU: hwmon:amdgpu:power1=soc
+POWER_SCOPE=gpu                # what is attributed to calls: gpu | soc | host
+POWER_HOST_OVERHEAD=100        # watts the rest of the box draws; ignored while a host-scope probe runs
+```
+
+**Meter** (host process, one row per second per domain, into the bundled `litellm-db`):
+
+```bash
+make power-meter                 # foreground; Ctrl-C to stop. Probes from POWER_PROBES
+# as a user service:
+# ~/.config/systemd/user/stack-power-meter.service
+# [Unit]\nDescription=open-llm-stack energy meter\nAfter=docker.service
+# [Service]\nExecStart=/usr/bin/make -C /home/adam/code/open-llm-stack power-meter\nRestart=on-failure
+# [Install]\nWantedBy=default.target
+# systemctl --user enable --now stack-power-meter
+# a second inference host, nothing installed there (clocks in sync: NTP):
+ssh gpu2 python3 - --probes nvml < scripts/power-meter.py | make power-ingest
+```
+
+The NVIDIA probe reads the card's own energy counter (a millijoule integral, exact whatever the load did between reads). A PSU with hwmon telemetry (Corsair HX/RM-i: `hwmon:corsairpsu`) gives the whole machine at 1 Hz; without one, `POWER_HOST_OVERHEAD` is a typed constant (read it once at a plug or UPS: whole box minus GPU idle). An APU (Strix Halo) has no separable GPU: meter the package (`hwmon:amdgpu:power1=soc` where the driver exposes it, or a RAPL probe, not built yet: `/sys/class/powercap/*/energy_uj` is root-only on stock kernels) and set `POWER_SCOPE=soc`.
+
+**Report:**
+
+```bash
+make cost-report SINCE="24 hours"
+# == TOTAL: measured = the scope's counters; host = the whole machine; cost = host x tariff; idle = measured - calls
+#  measured_kwh | host_kwh | host_kwh_is | cost | calls_kwh | idle_kwh | avg_w | seconds
+#  ...then per model (wh_per_1k_tok), per client (gateway key alias), per domain (every probe)
+```
+
+`measured_kwh` is the GPU's counter (±5%); `host_kwh` is measured at the PSU or estimated as measured + overhead, and the report says which. Idle energy (a model kept warm, the display floor) is printed beside the calls' energy and charged to nobody. The sentence for a client: "measured at the GPU's energy counter, attributed to your calls; the whole-machine figure is measured at the PSU / an estimate".
+
 ## Open WebUI (port 3001)
 
 Open http://127.0.0.1:3001. With the default `WEBUI_AUTH=false` there is no login; every model in `proxy/config.yaml` is in the picker because Open WebUI talks only to LiteLLM (`LITELLM_URL`, with `LITELLM_MASTER_KEY`); its direct-Ollama probe is disabled (`ENABLE_OLLAMA_API=false`). Set `WEBUI_AUTH=true` in `.env` and `docker compose up -d open-webui` to get normal signup/login (the first account becomes admin).
@@ -457,6 +495,9 @@ docker run --rm -v open-llm-stack_gitea-data:/data -v "$PWD":/backup alpine tar 
 | `make context-probe [M=<model>] [FULL=1]` | prove every chat model's declared window through the gateway, any backend (plan 14) |
 | `make model-fit M=<tag> [OUT=32768] [MAX_WINDOW=131072]` | Ollama: measure a model's window on the live backend, print its registry block |
 | `make context-report` | real prompt/completion sizes per model vs the registry caps, from LiteLLM's spend log |
+| `make power-meter` | meter energy into `litellm-db`, one row per second per domain, probes from `POWER_PROBES` (plan 15; foreground) |
+| `make power-ingest` | meter lines on stdin into `litellm-db` (a second host over ssh) |
+| `make cost-report [SINCE="24 hours"]` | kWh the local models burned and what it cost, then per model, client, domain |
 
 Scripts you can also call directly: `./scripts/preflight.sh` (backend reachability from inside litellm), `./scripts/check-ports.sh`, `./scripts/buzz-smoke.sh` (mention the bundled agent, expect a reply), `./scripts/team-smoke.sh`.
 

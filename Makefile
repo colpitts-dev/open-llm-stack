@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report context-probe model-fit context-report
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-model goose-image dinesh-runtime score-sync score-report context-probe model-fit context-report power-meter power-ingest cost-report
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -63,3 +63,13 @@ model-fit:       ## Ollama: measure a model's window on the live backend, print 
 
 context-report:  ## real prompt/completion sizes per model vs the registry caps, from LiteLLM's spend log (plan 14)
 	./scripts/context-report.sh
+
+power-meter:     ## meter energy into litellm-db, 1 row/s per domain (plan 15; foreground, Ctrl-C to stop): probes from POWER_PROBES
+	@set -a; . ./.env; set +a; [ -n "$$POWER_COST_PER_KWH" ] || { echo "POWER_COST_PER_KWH is blank in .env: energy accounting off"; exit 0; }; \
+	python3 scripts/power-meter.py --probes "$${POWER_PROBES:-nvml}" | python3 scripts/power-meter.py --ingest
+
+power-ingest:    ## meter lines on stdin into litellm-db; a second host: ssh gpu2 python3 - --probes nvml < scripts/power-meter.py | make power-ingest (plan 15)
+	@python3 scripts/power-meter.py --ingest
+
+cost-report:     ## kWh the local models burned and what it cost, then per model, client, domain (plan 15): make cost-report [SINCE="24 hours"]
+	./scripts/cost-report.sh

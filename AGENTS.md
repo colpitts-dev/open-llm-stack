@@ -1,6 +1,6 @@
 # Open LLM Stack — Rules for coding agents
 
-Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends, a Buzz LLM agent, a Gitea Actions runner and a five-agent team. Binding spec: `docs/spec.md`. Plans: `plans/01…14`. **Status:** plans 01–07 executed and validated on 2026-09-12 (01 LiteLLM, 02 Open WebUI, 03 Buzz relay, 04 Gitea, 05 optional backends, 06 Buzz agent, 07 assembly + full gate suite + README); plan 08 (agent team: profiles `gitea-runner` + `team`, gates G11–G14, spec §5.8) executed and validated on 2026-09-13; each plan ends with its execution report; plan 09 (external Gitea by `.env` only, API-only bootstrap, gates G15–G17, spec §5.10) executed and validated on 2026-09-13 in both modes (bundled regression G15; cutover to the operator's own Gitea G16–G17); plan 10 (repo factory + role teams, gates G18–G20, spec §5.11) executed and validated on 2026-09-13 in both modes; Monica (UI designer, second builder: service `monica`, `TEAM_MONICA_*`, `agents/monica.md`) added to the `builders` team on 2026-09-13 and verified on the forge. Plan 11 (progress in the job thread: persona milestones + opt-in log mirror `TEAM_NARRATE`, gates G21–G22, spec §5.12) executed on 2026-09-13. Plan 12 (goose runtime for Dinesh, gates G23–G25, spec §5.13) executed on 2026-09-14. Plan 13 (PR scoring: judge Jared, labels + comment + thread line, outcome sync, gates G26–G28, spec §5.14) executed on 2026-09-14. Plan 14 (context contract + GPU budget: `context_window` on every chat model, `make context-probe` / `model-fit` / `context-report`, heartbeat off by default, gates G29–G34, spec §5.15) executed on 2026-09-14 (G31 not reachable on Ollama 0.33.3 for the qwen3.5 family, G34 an operator step; see plan 14 §8). `README.md` is the operator document.
+Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), Buzz relay (3002), Gitea (3003), each a Compose profile, plus optional Ollama / llama.cpp backends, a Buzz LLM agent, a Gitea Actions runner and a five-agent team. Binding spec: `docs/spec.md`. Plans: `plans/01…15`. **Status:** plans 01–07 executed and validated on 2026-09-12 (01 LiteLLM, 02 Open WebUI, 03 Buzz relay, 04 Gitea, 05 optional backends, 06 Buzz agent, 07 assembly + full gate suite + README); plan 08 (agent team: profiles `gitea-runner` + `team`, gates G11–G14, spec §5.8) executed and validated on 2026-09-13; each plan ends with its execution report; plan 09 (external Gitea by `.env` only, API-only bootstrap, gates G15–G17, spec §5.10) executed and validated on 2026-09-13 in both modes (bundled regression G15; cutover to the operator's own Gitea G16–G17); plan 10 (repo factory + role teams, gates G18–G20, spec §5.11) executed and validated on 2026-09-13 in both modes; Monica (UI designer, second builder: service `monica`, `TEAM_MONICA_*`, `agents/monica.md`) added to the `builders` team on 2026-09-13 and verified on the forge. Plan 11 (progress in the job thread: persona milestones + opt-in log mirror `TEAM_NARRATE`, gates G21–G22, spec §5.12) executed on 2026-09-13. Plan 12 (goose runtime for Dinesh, gates G23–G25, spec §5.13) executed on 2026-09-14. Plan 13 (PR scoring: judge Jared, labels + comment + thread line, outcome sync, gates G26–G28, spec §5.14) executed on 2026-09-14. Plan 14 (context contract + GPU budget: `context_window` on every chat model, `make context-probe` / `model-fit` / `context-report`, heartbeat off by default, gates G29–G34, spec §5.15) executed on 2026-09-14 (G31 not reachable on Ollama 0.33.3 for the qwen3.5 family, G34 an operator step; see plan 14 §8). Plan 15 (measured cost: `scripts/power-meter.py` with `nvml` + `hwmon` probes, `make cost-report`, gates G35–G36, spec §5.16) executed on 2026-09-14; per-member LiteLLM keys moved to plan 16, `stack-status` to plan 17, per-token rates to a later plan. `README.md` is the operator document.
 
 ## Principles
 
@@ -27,6 +27,7 @@ Local-first, open-weights development stack: LiteLLM (3000), Open WebUI (3001), 
 - MinIO images come from quay.io; Docker Hub denies anonymous pulls of `minio/*`.
 - The reference host runs Ollama at `0.0.0.0:11434` outside this project; ports 3000–3003 must be free before `make up` (`scripts/check-ports.sh`).
 - Every chat model declares `context_window`; `max_input_tokens = context_window − max_output_tokens − max(context_window/4, 8192)`; Ollama entries mirror it as `num_ctx` and carry `keep_alive`; `make context-probe` must pass after any registry edit; the smoke fails on the arithmetic (spec §5.15). Never raise a window by hand: `make model-fit` (Ollama) or the server's flags plus the probe.
+- The stack's energy is measured on the host by `make power-meter` (probes `nvml`, `hwmon`; each row carries a domain and a scope `gpu|soc|host`; scopes are never summed), reported in kWh first (`make cost-report`: total, then model, client, domain), attributed to LiteLLM's ledger for one scope (`POWER_SCOPE`) and priced from `.env` (`POWER_COST_PER_KWH` in cents, printed as dollars); `measured_kwh` and `host_kwh` are never blended and the report says whether the host figure is measured or estimated (`POWER_HOST_OVERHEAD`, additive watts, never a factor); idle is shown, never charged to a client (spec §5.16).
 
 ## Buzz agent knowledge
 
@@ -36,7 +37,7 @@ Before any Buzz agent work, read `docs/buzz-agents-primer.md` (dense priming doc
 
 ```
 docker-compose.yml   .env.example   Makefile   docs/spec.md   plans/   agents/   runner/config.yaml
-proxy/config.yaml(.example)   scripts/{init,check-ports,preflight,smoke-test,bootstrap-gitea,buzz-smoke,bootstrap-team,team-entrypoint,team-smoke}.sh   models/
+proxy/config.yaml(.example)   scripts/{init,check-ports,preflight,smoke-test,bootstrap-gitea,buzz-smoke,bootstrap-team,team-entrypoint,team-smoke,cost-report}.sh  scripts/power-meter.py   models/
 ```
 
 ## Development commands
@@ -54,6 +55,8 @@ make team-bootstrap   # ./scripts/bootstrap-team.sh: agents' Gitea users + token
 make team-smoke       # ./scripts/team-smoke.sh: job thread -> Dinesh PR -> green CI -> Gilfoyle review (profile team; make test runs it too)
 make team-model M=<model>   # switch TEAM_MODEL (checked against LiteLLM) and recreate the four agents; caps come from the registry
 ./scripts/buzz-smoke.sh   # mention the bundled agent, expect a reply (profile buzz-agent; make test runs it too)
+make power-meter      # energy meter, 1 row/s per domain into litellm-db (plan 15; probes from POWER_PROBES; foreground)
+make cost-report [SINCE="24 hours"]   # kWh the local models burned and what it cost, then per model, client, domain
 ```
 
 ## Executing a plan
