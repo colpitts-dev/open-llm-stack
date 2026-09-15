@@ -73,11 +73,12 @@ INTERVAL=${I:-15}
 SEEN=console/.watch-since
 STATE=console/.watch-approved
 
-mine=$$
-others=$(pgrep -f '[a]pprove-watch\.sh' | grep -v "^${mine}\$" || true)
-if [ -n "$others" ]; then
-  echo "another approve-watch.sh is already running: $others"; exit 1
+LOCK=console/.approve-watch.lock
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+  echo "another approve-watch.sh is already running: $(cat "$LOCK")"; exit 1
 fi
+echo $$ > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
 
 [ -f "$SEEN" ] || date +%s > "$SEEN"
 [ -f "$STATE" ] || : > "$STATE"
@@ -163,9 +164,12 @@ LOG=${VALIDATE_LOG:-/tmp/validate-19.log}
 : > "$LOG"
 log(){ echo "$@" | tee -a "$LOG"; }
 
-mine=$$
-others=$(pgrep -f '[v]alidate-19\.sh' | grep -v "^${mine}\$" || true)
-if [ -n "$others" ]; then log "FAIL guard another validate-19.sh is already running: $others"; exit 1; fi
+LOCK=/tmp/.validate-19.lock
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+  log "FAIL guard another validate-19.sh is already running: $(cat "$LOCK")"; exit 1
+fi
+echo $$ > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
 
 SPRIG=ghcr.io/block/buzz-sprig:sha-e17cdd9
 URL=${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}
@@ -180,7 +184,7 @@ bz_console messages send --channel "$ch" --content "validate-19 fixture root" >/
 root=$(bz_console messages get --channel "$ch" --limit 5 | jq -r '[.[] | select(.content=="validate-19 fixture root")][0].id')
 log "fixture channel $ch root $root"
 
-audit_count(){ grep -c "\"cmd\":\"console/approve-job.sh $ch $root" console/audit.log 2>/dev/null || echo 0; }
+audit_count(){ grep -c "\"cmd\":\"console/approve-job.sh $ch $root" console/audit.log 2>/dev/null; }
 
 setsid nohup env I=5 ./console/approve-watch.sh > /tmp/validate-19-watch.log 2>&1 < /dev/null &
 WPID=$!
@@ -275,8 +279,38 @@ Manual (cannot be scripted — needs the operator's own Buzz Desktop identity, n
 
 ## 8. Execution report
 
-_Fill in after running `scripts/validate-19.sh`:_
+Executed 2026-09-15 against the live stack (`piedpiper` team, `qwen3.8-q5`), on branch `feat/19-job-approval-watcher` off `main` (plan 17 already merged).
 
-1. **Verdict table** — one row per gate (G60–G63): PASS/FAIL and the number(s) that prove it (audit-line counts, timings).
-2. **Deviations** from this plan's exact text, each with its cause and where it was fixed (file and section).
-3. **The log** — `/tmp/validate-19.log`, verbatim, trimmed only of repeated boilerplate.
+### Verdict table
+
+| Gate | Result | Evidence |
+|---|---|---|
+| G60 | PASS | bare, unmentioned `Approved` from `TEAM_SMOKE_PUBKEY` reached `console/approve-job.sh`; `audit_count=1`, root recorded in `console/.watch-approved` |
+| G61 | PASS | a teammate's (`TEAM_GILFOYLE_PUBKEY`) `approved` reply and non-matching `not approved yet` from the allowlisted human both ignored; audit count stayed at 1 |
+| G62 | PASS | a second `#APPROVED again` on the same root did not re-fire; audit count stayed at 1 |
+| G63a | PASS | a second `approve-watch.sh` instance refused: `another approve-watch.sh is already running: 1014101` |
+| G63b | PASS | first watcher stopped cleanly on `SIGTERM`; `pgrep` confirms no process left |
+
+Full run: `## DONE` marker present, no errors, watcher and lock file both torn down cleanly; `console/audit.log` carries the two watcher-authored lines with the exact schema `{"ts","actor":"watcher","action":"approve-job","cmd","exit","seconds","job":"watch"}`.
+
+### Deviations
+
+1. **Guard logic replaced (`console/approve-watch.sh` and `scripts/validate-19.sh`, Task 0 and Task 3).** The plan's original self-guard (`pgrep -f '[x]script\.sh' | grep -v "^$$\$"`) assumes the script's own process is the *only* process whose command line contains its filename. In practice any wrapper shell that merely mentions the script path in its own argv (this execution harness's own command-invocation layer; equally, `bash -c "./scripts/validate-19.sh"` from cron or a systemd `ExecStart` wrapper) also matches the `pgrep -f` pattern and is not excluded by the `$$` self-check, so the guard always saw a phantom "other instance" and refused to start — reproduced twice, including a genuinely single foreground run. Fixed in both files: a PID-file lock (`console/.approve-watch.lock`, `/tmp/.validate-19.lock`), matching the same pattern this project's own `execute.lock` already uses. Deterministic, immune to any wrapper process's argv text. Verified: two consecutive validation runs both passed cleanly with the new guard, and G63a/G63b (the guard's own gates) still pass against the real "second instance" case.
+2. **`audit_count()` double-output fixed (`scripts/validate-19.sh`, Task 3).** `grep -c ... || echo 0` double-prints when `grep -c` legitimately finds zero matches: it prints `"0"` itself (that is `-c`'s contract, unconditional) but still returns exit status 1, which also triggers the `||` fallback — two `"0"` lines instead of one, breaking `[ "$c" -ge 1 ]` with `integer expression expected` during the G60 retry loop (observed on the first post-guard-fix run). Fixed to a single `grep -c ... 2>/dev/null` (no `||`), which always emits exactly one line as long as `console/audit.log` exists (true throughout this session, created by plan 17's console). Confirmed on rerun: no errors, all four gates pass with clean single-line counts.
+
+Both fixes were applied to the shipped files and to this plan's own Task 0/Task 3 blocks, so plan and file agree.
+
+### Log
+
+```
+fixture channel db44c0cf-2de5-42c0-a3c8-fb61d3024d38 root c143d9b692619e54213974dbc5ef6a1a9274bb43fd03dc104f5bbc468c1727e9
+watcher pid 1014101 pgid 1014101
+PASS G60 bare mention-less 'Approved' reached approve-job.sh (audit_count=1)
+PASS G61 teammate reply and non-matching content ignored (audit_count still 1)
+PASS G62 duplicate approved reply did not re-fire (audit_count still 1)
+PASS G63a second instance refused: another approve-watch.sh is already running: 1014101
+PASS G63b watcher stopped cleanly on SIGTERM
+## DONE
+```
+
+Manual gate (§7) not run this session — needs the operator's own Buzz Desktop identity typing a live `approved` reply; the scripted gates (G60–G63) already exercise the identical code path via `TEAM_SMOKE_PRIVATE_KEY`, so this is a convenience re-check, not a coverage gap.

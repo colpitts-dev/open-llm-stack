@@ -120,3 +120,7 @@ stack-status:    ## one JSON: services, gateway, backend, power per domain, 24 h
 
 console:         ## the console on BIND_HOST:CONSOLE_PORT (127.0.0.1:3004): a window onto the same files and scripts (plan 17)
 	python3 console/app.py
+
+approval-watch:  ## poll job-* channels for a bare 'approved'/'#approved' reply, no @mention needed, and approve automatically (plan 19; foreground, Ctrl-C to stop): make approval-watch [I=<seconds>]
+	@chmod +x console/approve-watch.sh
+	@I=$(I) ./console/approve-watch.sh
