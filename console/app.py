@@ -84,9 +84,11 @@ NAME = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 ROLE = re.compile(r"^(builder|reviewer|coordinator|assistant)$")
 SERVICE = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
 UUID = re.compile(r"^[0-9a-f-]{36}$"); HEX64 = re.compile(r"^[0-9a-f]{64}$")   # a Buzz channel id and an event id (plan 16.5 approve-job)
-def p(params, key, rx=NAME):
+HINT = {NAME: "lowercase letters/digits/._- , must start with a letter", ROLE: "one of builder, reviewer, coordinator, assistant",
+        SERVICE: "lowercase letters/digits/- , must start with a letter", UUID: "a UUID, e.g. from the post-job output", HEX64: "64 hex chars, the thread root event id"}
+def p(params, key, rx=NAME, label=None):
     v = params.get(key, "")
-    if not rx.match(v): raise ValueError(f"bad {key}: {v!r}")
+    if not rx.match(v): raise ValueError(f"bad {label or key}: {v!r} — {HINT.get(rx, 'does not match the expected format')}")
     return v
 
 ACTIONS = {   # name -> (argv builder, destructive?)
@@ -107,15 +109,15 @@ ACTIONS = {   # name -> (argv builder, destructive?)
     "team-model": (lambda q: ["make", "team-model", f"M={p(q, 'M')}"], False),
     "team-status": (lambda q: ["make", "team-status"], False),
     "team-smoke": (lambda q: ["make", "team-smoke"], False),
-    "member-add": (lambda q: ["make", "member-add", f"T={p(q, 'T')}", f"N={p(q, 'N')}", f"R={p(q, 'R', ROLE)}"], False),
-    "member-rm": (lambda q: ["make", "member-rm", f"T={p(q, 'T')}", f"N={p(q, 'N')}"], True),
+    "member-add": (lambda q: ["make", "member-add", f"T={p(q, 'T', label='team')}", f"N={p(q, 'N', label='name')}", f"R={p(q, 'R', ROLE, label='role')}"], False),
+    "member-rm": (lambda q: ["make", "member-rm", f"T={p(q, 'T', label='team')}", f"N={p(q, 'N', label='name')}"], True),
     "score-sync": (lambda q: ["make", "score-sync"], False),
     "score-report": (lambda q: ["make", "score-report"], False),
     "restart": (lambda q: ["docker", "compose", "restart", p(q, "S", SERVICE)], False),
-    "recreate": (lambda q: ["docker", "compose", "up", "-d", "--force-recreate", p(q, "S", SERVICE)], False),
+    "recreate": (lambda q: ["docker", "compose", "up", "-d", "--force-recreate", p(q, "S", SERVICE, label="service")], False),
     "unload-model": (lambda q: ["bash", "-c", "curl -s localhost:11434/api/generate -d '{\"model\":\"" + p(q, "M") + "\",\"keep_alive\":0}'"], True),
-    "post-job": (lambda q: ["./console/post-job.sh", p(q, "T"), q.get("text", "")[:2000]], False),
-    "approve-job": (lambda q: ["./console/approve-job.sh", p(q, "C", UUID), p(q, "R", HEX64), q.get("note", "")[:200]], False),   # plan 16.5 checkpoint: the human says `approved`
+    "post-job": (lambda q: ["./console/post-job.sh", p(q, "T", label="team"), q.get("text", "")[:2000]], False),
+    "approve-job": (lambda q: ["./console/approve-job.sh", p(q, "C", UUID, label="channel id"), p(q, "R", HEX64, label="thread root id"), q.get("note", "")[:200]], False),   # plan 16.5 checkpoint: the human says `approved`
 }
 
 # ---------------------------------------------------------------- runner: one job at a time, streamed, audited
@@ -305,7 +307,7 @@ def screen_teams(env):
     members = [(esc(m["name"].title()), esc(m["role"]), f'<span class="mono">{esc(m["name"])}</span>', f'<span class="mono">{esc(m.get("runtime", "buzz-agent"))}</span>',
                 btn("recreate", "restart", {"S": m["name"]}) + f' <a class="btn" href="/teams?persona={esc(m["name"])}">persona</a> ' + btn("member-rm", "remove", {"T": team, "N": m["name"]}, destructive=True))
                for m in tf.get("members", [])]
-    add = (f'<form class="mock" data-run="member-add"><input type="hidden" name="T" value="{esc(team)}"><label>Name <input id="m-name" name="N" value=""></label>'
+    add = (f'<form class="mock" data-run="member-add"><input type="hidden" name="T" value="{esc(team)}"><label>Name <input id="m-name" name="N" value="" placeholder="e.g. bertram" pattern="[a-z][a-z0-9._-]{{0,63}}" title="lowercase letters/digits/._- , must start with a letter"></label>'
            f'<label>Role <select id="m-role" name="R"><option>builder</option><option>reviewer</option><option>coordinator</option><option>assistant</option></select></label>'
            f'<div><button class="btn primary" type="submit">Add member</button> <span class="example">runs make member-add T={esc(team)} N=&lt;name&gt; R=&lt;role&gt;: keys, render, forge user, container; then write the persona</span></div></form>')
     kv = f'<dl class="kv"><dt>Organisation</dt><dd class="mono">{esc(tf.get("org", ""))}</dd><dt>Model</dt><dd class="mono">{esc(tf.get("model", ""))}</dd><dt>CI label</dt><dd class="mono">{esc(tf.get("ci_label", ""))}</dd><dt>Humans</dt><dd class="mono">{esc(", ".join(h[:8] + "…" for h in tf.get("humans", [])))}</dd></dl>'
