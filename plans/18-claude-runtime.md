@@ -1,7 +1,7 @@
 # Plan 18 — Claude Code as a team runtime: local models through the gateway, hosted models from an opt-in include
 
-**Spec:** `docs/spec.md` (this plan adds §5.19 and gates G50–G54). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
-**Sequence:** 18. Requires plans 15 and 16 executed (17 is independent). Adds one image (`agents/claude/Dockerfile`, the second opt-in build after goose), one probe, one include file for the registry with a switch script, one entrypoint branch, four make targets, `.env` lines, docs. No new service, port or network.
+**Spec:** `docs/spec.md` (this plan adds §5.20 and gates G55–G59). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
+**Sequence:** 18 (after 16.5 and 17; the builder is whoever `team-roster.py role builder` names, Gilfoyle on the default team since plan 16.5). Requires plans 15 and 16 executed (17 is independent). Adds one image (`agents/claude/Dockerfile`, the second opt-in build after goose), one probe, one include file for the registry with a switch script, one entrypoint branch, four make targets, `.env` lines, docs. No new service, port or network.
 **Execute with:** `/execute plans/18-claude-runtime.md`
 **Network:** `docker pull` and the two pinned `npm install`s inside the image build; hosted models need egress to their provider. Everything else below was verified on the reference host on 2026-09-14 (Node 22.22 on the host for the scratch runs; the image pins Node 22).
 
@@ -32,9 +32,9 @@
 | smoke rule | `scripts/smoke-test.sh` `test_litellm` | `proxy/config.yaml` on disk names no closed-weight model or router; every `/v1/models` entry with `execution_locus: cloud` is a `model_name` in `proxy/frontier.yaml` on disk; every closed-weight id in `/v1/models` has `execution_locus: cloud` |
 | measurement | plan 12's table per mode and per model: time to PR, calls, input/output tokens, tool calls, persona misses, cost from LiteLLM spend | |
 
-**Measured today (reference host).** Claude Code 2.1.270 on Node 22 answers through LiteLLM to `ornith-max`: `--output-format json` → `{"subtype":"success","stop_reason":"end_turn","num_turns":2,"duration_ms":6033,"total_cost_usd":0.01266,"usage":{"input":2377,"output":31},"session_id":"447e…","modelUsage":["ornith-max"]}`; through the adapter: `initialize` → `protocolVersion 1, authMethods []`, `session/new` → `configOptions [mode, model, effort, fast]`, modes `default, acceptEdits, plan, auto, bypassPermissions`, a prompt → `stopReason end_turn`, usage 28 827 input tokens (Claude Code's own system prompt and tool schemas: prefill per turn on a local hybrid model, cached by the per-agent slot from plan 14), the answer arrived as `agent_thought_chunk` only (the local reasoning model answered inside its thinking block: a persona-quality item for G51, lever in §5). Without any credential the adapter returns `{"code":-32000,"message":"Authentication required"}` on the prompt. LiteLLM's `/v1/messages` and `/v1/messages/count_tokens` answer for `ornith-max` (200) and map the model's reasoning to a `thinking` block ahead of the text.
+**Measured today (reference host).** Claude Code 2.1.270 on Node 22 answers through LiteLLM to `ornith-max`: `--output-format json` → `{"subtype":"success","stop_reason":"end_turn","num_turns":2,"duration_ms":6033,"total_cost_usd":0.01266,"usage":{"input":2377,"output":31},"session_id":"447e…","modelUsage":["ornith-max"]}`; through the adapter: `initialize` → `protocolVersion 1, authMethods []`, `session/new` → `configOptions [mode, model, effort, fast]`, modes `default, acceptEdits, plan, auto, bypassPermissions`, a prompt → `stopReason end_turn`, usage 28 827 input tokens (Claude Code's own system prompt and tool schemas: prefill per turn on a local hybrid model, cached by the per-agent slot from plan 14), the answer arrived as `agent_thought_chunk` only (the local reasoning model answered inside its thinking block: a persona-quality item for G56, lever in §5). Without any credential the adapter returns `{"code":-32000,"message":"Authentication required"}` on the prompt. LiteLLM's `/v1/messages` and `/v1/messages/count_tokens` answer for `ornith-max` (200) and map the model's reasoning to a `thinking` block ahead of the text.
 
-**Success criteria.** G50 — `make claude-image` builds; `claude --version` prints `2.1.270 (Claude Code)`; `acp-probe.py` completes initialize, session/new and one prompt against the adapter in the image with the local model. G51 (mode A) — `make member-claude N=dinesh MODE=local`, two consecutive `make team-smoke` passes, the metrics row recorded, no `ANTHROPIC_API_KEY` in the container, spend rows under Dinesh's alias. G52 (mode B, Anthropic) — `ANTHROPIC_API_KEY` in `.env`, `make frontier-on` lists the Anthropic block as on, `make member-claude N=dinesh MODE=hosted` (Sonnet 5), two smoke passes, spend rows non-zero at Anthropic rates under Dinesh's alias, `make test` passes with the new rule. G53 (mode B, Fireworks) — `FIREWORKS_AI_API_KEY` in `.env`, `make frontier-on` adds the Fireworks block, `make member-claude N=dinesh MODE=hosted M=kimi-k2p7-code`, one smoke pass, spend rows non-zero under `fireworks_ai/…`; `make frontier-off` then `make test` unchanged. G54 (flags off) — every member on `buzz-agent`, `frontier.yaml` empty: `make test` output identical to plan 16's run; no team container carries an `ANTHROPIC_*` or `CLAUDE_*` variable.
+**Success criteria.** G55 — `make claude-image` builds; `claude --version` prints `2.1.270 (Claude Code)`; `acp-probe.py` completes initialize, session/new and one prompt against the adapter in the image with the local model. G56 (mode A) — `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local`, two consecutive `make team-smoke` passes, the metrics row recorded, no `ANTHROPIC_API_KEY` in the container, spend rows under Dinesh's alias. G57 (mode B, Anthropic) — `ANTHROPIC_API_KEY` in `.env`, `make frontier-on` lists the Anthropic block as on, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted` (Sonnet 5), two smoke passes, spend rows non-zero at Anthropic rates under Dinesh's alias, `make test` passes with the new rule. G58 (mode B, Fireworks) — `FIREWORKS_AI_API_KEY` in `.env`, `make frontier-on` adds the Fireworks block, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted M=kimi-k2p7-code`, one smoke pass, spend rows non-zero under `fireworks_ai/…`; `make frontier-off` then `make test` unchanged. G59 (flags off) — every member on `buzz-agent`, `frontier.yaml` empty: `make test` output identical to plan 16's run; no team container carries an `ANTHROPIC_*` or `CLAUDE_*` variable.
 
 **Out of scope.** Subscription credentials (decided above); an escalation cascade (per-member switch only); Bedrock, Agent Platform and Foundry (route them through LiteLLM as registry entries when needed); MCP servers passed to the adapter (buzz-dev-mcp stays off as with goose: Claude Code has its own tools, the `buzz` CLI is on `PATH`); Fireworks' `fireconnect` CLI (it configures Claude Code for Fireworks directly, bypassing the gateway and the ledger).
 
@@ -54,7 +54,7 @@
 | `docker-compose.yml` | `litellm` mounts `./proxy/frontier.yaml:/app/frontier.yaml:ro` |
 | `Makefile` | `claude-image`, `member-claude`, `frontier-on`, `frontier-off` |
 | `.env.example`, `.gitignore` | `ANTHROPIC_API_KEY=`, `FIREWORKS_AI_API_KEY=`; `proxy/frontier.yaml` ignored |
-| `docs/spec.md` §1 (image row), §3, §5.19, §7; `README.md`; `AGENTS.md` | docs, gates, status |
+| `docs/spec.md` §1 (image row), §3, §5.20, §7; `README.md`; `AGENTS.md` | docs, gates, status |
 
 ## 3. Dependencies and verified facts (reference host, 2026-09-14)
 
@@ -242,7 +242,7 @@ case "${1:-status}" in
 esac
 ```
 
-(`bash -n` and a dry run of the filter on the example are part of G52.) `proxy/config.yaml.example`: first non-comment lines `include:\n  - frontier.yaml   # plan 18: hosted models live only there; make frontier-on|off`. `scripts/init.sh`: `[ -f proxy/frontier.yaml ] || printf 'model_list: []\n' > proxy/frontier.yaml`. `.gitignore`: `proxy/frontier.yaml`. `docker-compose.yml` `litellm` volumes: `- ./proxy/frontier.yaml:/app/frontier.yaml:ro   # plan 18; make init creates it (LiteLLM refuses to start on a missing include)`. `.env.example`, under the LLM backend section:
+(`bash -n` and a dry run of the filter on the example are part of G57.) `proxy/config.yaml.example`: first non-comment lines `include:\n  - frontier.yaml   # plan 18: hosted models live only there; make frontier-on|off`. `scripts/init.sh`: `[ -f proxy/frontier.yaml ] || printf 'model_list: []\n' > proxy/frontier.yaml`. `.gitignore`: `proxy/frontier.yaml`. `docker-compose.yml` `litellm` volumes: `- ./proxy/frontier.yaml:/app/frontier.yaml:ro   # plan 18; make init creates it (LiteLLM refuses to start on a missing include)`. `.env.example`, under the LLM backend section:
 
 ```
 # Hosted models (plan 18 mode B, opt-in): keys for the provider blocks in proxy/frontier.yaml.example; make frontier-on keeps
@@ -277,7 +277,7 @@ Smoke (`test_litellm`), replacing the closed-weight check:
 `scripts/team-render.py` (plan 16): `IMAGES["claude"] = "open-llm-stack/claude-agent:2.1.270"`; optional member key `effort = "low|medium|high|xhigh|max"` (validated), rendered as `TEAM_EFFORT: <value or empty>`. `Makefile`:
 
 ```make
-member-claude:   ## put one member on the Claude Code runtime: make member-claude N=dinesh MODE=local|hosted [M=<model>] (plan 18)
+member-claude:   ## put one member on the Claude Code runtime: make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local|hosted [M=<model>] (plan 18)
 	@test -n "$(N)" && test -n "$(MODE)" || { echo "usage: make member-claude N=<member> MODE=local|hosted [M=<model>]"; exit 1; }
 	@case "$(MODE)" in \
 	  local)  python3 scripts/team-roster.py set $(N) runtime claude && python3 scripts/team-roster.py set $(N) model "$${M:-$$(python3 scripts/team-roster.py get model)}" ;; \
@@ -310,9 +310,9 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 
 ### Task 6 — docs
 
-- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.19 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G50–G54.
+- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.20 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G55–G59.
 - `README.md`: "Claude Code as a runtime" after the runtimes paragraph: what "runs Claude Code" means here (plain text, per Anthropic's branding rule), mode A ("unsupported by Anthropic, documented by LiteLLM"), mode B with `make frontier-on`, the provider keys, the egress warning, adding a provider block (copy a block, name the key variable in its marker line), and one sentence: subscription login is not offered by the stack, with the terms reference and the reason.
-- `AGENTS.md`: replace the closed-weight-runtimes line with: "Claude Code is an opt-in runtime per member (`runtime = "claude"`, plan 18): local models through LiteLLM, or hosted models only from `proxy/frontier.yaml` (`make frontier-on`, provider keys in `.env`). `proxy/config.yaml` stays open weights and local; the smoke enforces it. No subscription credentials, ever (spec §5.19)."
+- `AGENTS.md`: replace the closed-weight-runtimes line with: "Claude Code is an opt-in runtime per member (`runtime = "claude"`, plan 18): local models through LiteLLM, or hosted models only from `proxy/frontier.yaml` (`make frontier-on`, provider keys in `.env`). `proxy/config.yaml` stays open weights and local; the smoke enforces it. No subscription credentials, ever (spec §5.20)."
 
 ## 5. Considerations
 
@@ -322,39 +322,39 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 - **Hosted open weights are still egress.** Kimi and GLM on Fireworks are open weights, but the code leaves the host; that is why they live in the include, not in `proxy/config.yaml`, and why the smoke keys on `execution_locus: cloud`, not on weights.
 - **Provider slugs drift.** The example names slugs with a date; `scripts/frontier.sh status` prints what the provider lists. Adding a provider is a block in the example with a `# provider: <name> key: <VAR>` marker and a key in `.env`; no code.
 - **Budgets.** Per-member virtual keys (plan 15) take `max_budget`; set one on every member that runs a hosted model. Not gated here; documented.
-- **Pin bumps.** Two pins (`CLAUDE_CODE_VERSION`, `CLAUDE_ACP_VERSION`) and one digest; the adapter's bundled SDK carries its own CLI copy, so the two versions need not match, but keep them close. A bump re-runs G50 and one smoke per mode in use.
+- **Pin bumps.** Two pins (`CLAUDE_CODE_VERSION`, `CLAUDE_ACP_VERSION`) and one digest; the adapter's bundled SDK carries its own CLI copy, so the two versions need not match, but keep them close. A bump re-runs G55 and one smoke per mode in use.
 - **Cloud providers for Claude models.** Bedrock, Agent Platform and Foundry go through LiteLLM as `bedrock/…` or `vertex_ai/…` blocks in the include, keeping the one-ledger property; the adapter's own `CLAUDE_CODE_USE_*` path is not used.
 
 ## 6. Testing strategy
 
-Image and probe first (G50, local model). Mode A on Dinesh (G51) with the metrics row against plan 12's table. Mode B only with real keys in `.env` (G52 Anthropic, G53 Fireworks), then `make frontier-off` and `make test`. Flags-off regression last (G54). Numbers into §8.
+Image and probe first (G55, local model). Mode A on Dinesh (G56) with the metrics row against plan 12's table. Mode B only with real keys in `.env` (G57 Anthropic, G58 Fireworks), then `make frontier-off` and `make test`. Flags-off regression last (G59). Numbers into §8.
 
 ## 7. Validation commands
 
 ```bash
-# G50 image and probe
+# G55 image and probe
 make claude-image && docker run --rm open-llm-stack/claude-agent:2.1.270 sh -c 'claude --version; id agent; which claude-agent-acp buzz buzz-acp python3'
 docker run --rm --add-host host.docker.internal:host-gateway -e ANTHROPIC_BASE_URL=http://host.docker.internal:3000 -e ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY -e ANTHROPIC_MODEL=ornith-max \
   -v $PWD/agents/claude:/opt/probe:ro open-llm-stack/claude-agent:2.1.270 python3 /opt/probe/acp-probe.py /home/agent "Reply with exactly: OK" -- claude-agent-acp   # initialize, session, end_turn
 
-# G51 mode A
-make member-claude N=dinesh MODE=local && make team-smoke && make team-smoke
-docker compose exec -T dinesh sh -c 'env | grep -cE "^ANTHROPIC_API_KEY="'   # 0
+# G56 mode A
+make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local && make team-smoke && make team-smoke
+docker compose exec -T $(python3 scripts/team-roster.py role builder | awk 'NR==1') sh -c 'env | grep -cE "^ANTHROPIC_API_KEY="'   # 0
 docker compose exec -T litellm-db psql -U litellm -d litellm -Atc "select metadata->>'user_api_key_alias', model, count(*) from \"LiteLLM_SpendLogs\" where \"startTime\" > now()-interval '20 minutes' group by 1,2"
 
-# G52 mode B, Anthropic (ANTHROPIC_API_KEY in .env)
-bash -n scripts/frontier.sh && make frontier-on && ./scripts/frontier.sh status && make member-claude N=dinesh MODE=hosted && make team-smoke && make team-smoke
+# G57 mode B, Anthropic (ANTHROPIC_API_KEY in .env)
+bash -n scripts/frontier.sh && make frontier-on && ./scripts/frontier.sh status && make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted && make team-smoke && make team-smoke
 docker compose exec -T litellm-db psql -U litellm -d litellm -Atc "select model, round(sum(spend)::numeric,4), count(*) from \"LiteLLM_SpendLogs\" where model like 'anthropic/%' and \"startTime\" > now()-interval '20 minutes' group by 1"   # non-zero
 make test | sed -n '/open weights and local/,/hosted entry/p'
 
-# G53 mode B, Fireworks (FIREWORKS_AI_API_KEY in .env)
-make frontier-on && make member-claude N=dinesh MODE=hosted M=kimi-k2p7-code && make team-smoke
+# G58 mode B, Fireworks (FIREWORKS_AI_API_KEY in .env)
+make frontier-on && make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted M=kimi-k2p7-code && make team-smoke
 docker compose exec -T litellm-db psql -U litellm -d litellm -Atc "select model, round(sum(spend)::numeric,4), count(*) from \"LiteLLM_SpendLogs\" where model like 'fireworks_ai/%' and \"startTime\" > now()-interval '20 minutes' group by 1"
-make member-runtime N=dinesh R=buzz-agent && make frontier-off && make test
+make member-runtime N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') R=buzz-agent && make frontier-off && make test
 
-# G54 flags off
+# G59 flags off
 make test   # identical sections to plan 16's run
-for s in dinesh gilfoyle jared erlich monica; do docker compose exec -T $s sh -c 'env | grep -cE "^(ANTHROPIC|CLAUDE)_"'; done   # all 0
+for s in $(python3 scripts/team-roster.py members | cut -d' ' -f1); do docker compose exec -T $s sh -c 'env | grep -cE "^(ANTHROPIC|CLAUDE)_"'; done   # all 0
 ```
 
 ## 8. Execution report
