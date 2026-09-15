@@ -1,4 +1,4 @@
-.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-render litellm-keys team-status team-model goose-image member-runtime dinesh-runtime member-add member-rm team-new score-sync score-report context-probe model-fit context-report power-meter power-ingest cost-report
+.PHONY: init up down ps logs test reload gitea-bootstrap team-bootstrap team-smoke team-render litellm-keys team-status team-model goose-image member-runtime dinesh-runtime member-add member-rm team-new score-sync score-report context-probe model-fit context-report power-meter power-ingest cost-report stack-status console
 
 init:            ## first run: .env + secrets + proxy/config.yaml (idempotent)
 	./scripts/init.sh
@@ -114,3 +114,9 @@ power-ingest:    ## meter lines on stdin into litellm-db; a second host: ssh gpu
 
 cost-report:     ## kWh the local models burned and what it cost, then per model, client, domain (plan 15): make cost-report [SINCE="24 hours"]
 	./scripts/cost-report.sh
+
+stack-status:    ## one JSON: services, gateway, backend, power per domain, 24 h tokens and energy cost, open PRs, cap alerts (plan 17)
+	./scripts/stack-status.sh
+
+console:         ## the console on BIND_HOST:CONSOLE_PORT (127.0.0.1:3004): a window onto the same files and scripts (plan 17)
+	python3 console/app.py

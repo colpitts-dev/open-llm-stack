@@ -440,6 +440,30 @@ One thing to record in your instance's own decision log: on a pull_request event
 - Never point the bundled `gitea-runner` at an external Gitea: it mounts the host docker socket and runs on the host network. External mode drops that profile and uses your instance's own runner.
 - The runner mounts `/var/run/docker.sock`: CI jobs are sibling containers with the same trust boundary as your own `docker` command. Only run workflows you would run by hand.
 
+## Console (port 3004)
+
+A host-side window onto the stack's own files and scripts — not a second control plane. Every screen reads what `make stack-status`, `team-status`, `context-report` and `score-report` already read; every action it runs is a make target or a script the terminal has, and it shows you the exact command before running it.
+
+```bash
+make console                     # http://127.0.0.1:3004  (host process: it must run make init/up before the stack exists)
+```
+
+- **Screens.** Setup (get it running: profiles, `BIND_HOST`, the backend, `make init/up/gitea-bootstrap/team-bootstrap/test`), Overview (services, gateway, power, 24 h tokens and cost, cap alerts, open PRs), Models (the registry vs the gateway's proved windows, `context-probe`, `model-fit`, `reload`, `team-model`), Teams (`team.toml`, members, personas, `member-add`/`member-rm`), Jobs (ask the team, see the PR and its scores, `score-sync`), Runs & logs (why an agent is quiet, milestone-filtered logs, `team-smoke`), Audit (every action, read-only).
+- **The drawer.** A bar fixed to the bottom of every screen shows the last command it ran, streams new output live while an action is in flight, and turns green or red on exit.
+- **The audit log.** `console/audit.log` (gitignored, append-only): one line per action with who ran it, the exact command, its exit code and how long it took.
+- **The rule.** The console never does anything the terminal cannot. Every write shows a diff first; destructive actions (`make down`, `member-rm`, a model unload) need you to type the action's name back.
+- **As a user service**, mirroring the meter's:
+
+```bash
+# ~/.config/systemd/user/stack-console.service
+# [Unit]\nDescription=open-llm-stack console\nAfter=docker.service
+# [Service]\nExecStart=/usr/bin/make -C /home/adam/code/open-llm-stack console\nRestart=on-failure
+# [Install]\nWantedBy=default.target
+# systemctl --user enable --now stack-console
+```
+
+Loopback only, today with no login (any process on your machine that can reach 127.0.0.1:3004 can drive it). Exposing it beyond loopback — Gitea OIDC behind TLS at a reverse proxy — waits for a later plan.
+
 ## Security notes
 
 - **Loopback only by default.** Every published port binds `BIND_HOST=127.0.0.1`; the backends, the health/metrics listeners and the databases publish nothing. `BIND_HOST=0.0.0.0` exposes all four services to your LAN at once: LiteLLM (master-key auth, so an authenticated model API), Open WebUI (with `WEBUI_AUTH=false` anyone on the network gets the admin chat session: switch to `WEBUI_AUTH=true` first), the Buzz relay (open mode: anyone joins), and Gitea (self-registration on). When you do it, also set `BUZZ_PUBLIC_HOST`, `BUZZ_RELAY_URL`, `LITELLM_PUBLIC_URL` and `GITEA_PUBLIC_URL` to the LAN address.

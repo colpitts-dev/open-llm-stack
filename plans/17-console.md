@@ -781,4 +781,112 @@ curl -s -X POST -H "X-Console-Token: $TOKEN" -H 'Content-Type: application/json'
 
 ## 8. Execution report
 
-(to be written at execution: the smoke's console section, the audit lines for G51–G54, the diff shown for G52, the member and the job for G53–G54, any deviation with its reason)
+Executed 2026-09-15 against the live stack (external Gitea at git.colpitts.dev, team `piedpiper`, model `qwen3.8-max`).
+
+| Gate | Result | Evidence |
+|---|---|---|
+| G39 | PASS | `make stack-status` valid JSON, every field present, 1.545s (<3s), `grep -c nvidia-smi scripts/stack-status.sh` = 0 |
+| G50 | PASS | 7/7 screens 200 in <2s (jobs slowest, 1.40s); foreign `Host` 400; `POST /api/run` without token 403; bound `127.0.0.1:3004` only |
+| G51 | PASS (after a fix) | streamed `context-report` audited (exit 0, 0.6s); UI's "message"-type frames match `make -s context-report` byte for byte |
+| G52 | PASS | `.env` diff (masked) → apply → grep confirms → revert; `make up` from Setup: 6.7s, exit 0, all containers Healthy |
+| G53 | PASS | `member-add` via UI = terminal argv; new member (`hendricks`) replied to a mention in ~10s; persona diff + apply force-recreated only that one container; `member-rm` refused (409) without confirm, ran with it |
+| G54 | PASS | job posted + approved from the console → PR `demo-calc#101`; pipeline (plan 16.5, untouched) ran on its own: CI success, Conformance 4/4, labels `complexity/1`/`confidence/high`/`defect/none`, Score comment; PR visible on the Jobs screen; `down`/`member-rm` refuse (409) without typed confirmation |
+
+### Deviations from the plan's literal text
+
+1. **`console/static/console.css`** — the plan calls for copying "the stamped mock's `<style>` block" verbatim, but that mock is an external artifact not present anywhere in this repo or in the plan text itself. Authored a self-consistent light/dark stylesheet instead, covering every selector the plan lists and every class `console/app.py`'s HTML actually emits (checked by grep), plus the two required additions (`.drawer .fail`, `#stream`). The operator should swap in the real mock's tokens if pixel fidelity to it matters (spec §5.19, plan §5.2).
+2. **`scripts/stack-status.sh`** — the plan's block hardcodes the judge token as `TEAM_JARED_GITEA_TOKEN`, but the plan's own prose says "after plan 16 [(already executed)] the judge token is `team-roster.py role coordinator`'s prefix." Changed the PR-listing section to resolve the coordinator's token dynamically through the roster, falling back to `TEAM_JARED_GITEA_TOKEN` if that lookup fails.
+3. **`scripts/team-render.py`** — this deployment's `team.toml` has `humans = []` (the allowlist flows from `.env`'s `TEAM_ALLOWLIST`/`TEAM_SMOKE_PUBKEY` instead), so the plan's own "verify at execution which of the two applies" resolves to: the console needs the same treatment as the smoke identity. Added `${CONSOLE_PUBKEY:-}` into the rendered `BUZZ_ACP_RESPOND_TO_ALLOWLIST` string (one line) and re-ran `make team-render`.
+4. **`console/app.py` `ACTIONS["context-report"]`** — ran plain `["make","context-report"]`; without `-s`, GNU make echoes its recipe line before running it, which broke G51's byte-for-byte requirement against `make -s context-report`. Changed to `["make","-s","context-report"]`.
+5. **`console/post-job.sh`** — the final echo line wrapped the literal word `` approved `` in bare backticks inside a double-quoted string; bash parsed that as command substitution (`approved: command not found`, printed to stderr but otherwise harmless — the job message itself still posted). Escaped the backticks.
+6. **`console/approve-job.sh`** — sent the approval with `--reply-to` but no `--mention`. Buzz agents only start a new turn on an explicit mention; confirmed by cross-reference with the already-validated `scripts/team-smoke.sh`, whose own approval line does mention the builder. Added a lookup of the active team's builder pubkey (from `teams/$TEAM_NAME/team.toml`) and `--mention`. Without this fix the approval was silently inert: the message posted, but the builder never started a new turn (verified: no new `turn starting` log line in 16+ minutes; after the fix, a turn started within 8s).
+7. **Host `.env` pre-dates this plan.** `scripts/init.sh` only copies `.env.example` to `.env` on first creation, so a new key added to `.env.example` (`CONSOLE_PORT`/`CONSOLE_PRIVATE_KEY`/`CONSOLE_PUBKEY`) does not retroactively appear in an already-existing `.env`, and `blank()` treats a wholly absent line as "not blank" (skips minting). Hand-added the three blank lines to `.env` (mirroring `.env.example`) before `make init` would mint the keypair. Worth a callout for anyone upgrading an existing deployment rather than starting fresh.
+
+### Observation (pre-existing, not a plan 17 issue)
+
+`make member-rm` aborts partway — the forge-team-membership and `PURGE=1` steps never run — if the member has already been removed from `team.toml` (e.g. by a prior partial run): `scripts/team-roster.py rm <name>` exits non-zero ("is not a member") and the target has no `-` prefix, so `make` stops there. Hit this cleaning up the `hendricks` scratch member; worked around by running the forge-team-removal and purge `curl`/`docker volume rm` commands by hand. Dates to plan 16; left unfixed here as out of this plan's scope.
+
+### Log
+
+```
+=== G39 (status JSON, moved from plan 15) ===
+$ time make -s stack-status | jq -e '.services, .gateway.status, .power, .last_24h.calls, .energy_24h, .alerts, .open_prs' >/dev/null
+real 0m1.545s  (jq -e exit 0: every field present)
+$ grep -c nvidia-smi scripts/stack-status.sh
+0
+PASS G39 — valid JSON, every field present, 1.545s (<3s), no vendor tool.
+
+=== G50 (console up, screens, security) ===
+$ make console &   (bound 127.0.0.1:3004 only, confirmed via ss -ltnp)
+overview -> 200 1.392371
+models   -> 200 0.582527
+setup    -> 200 0.000617
+teams    -> 200 0.347578
+jobs     -> 200 1.396027
+runs     -> 200 0.377963
+audit    -> 200 0.000571
+Host: evil.example -> 400
+POST /api/run without token -> 403
+PASS G50 — all seven screens 200 in <2s, foreign Host 400, unauthenticated POST 403.
+
+=== G51 (streamed action, audited) ===
+First run surfaced a real bug: the "context-report" action ran plain `make context-report`, and GNU make echoes
+its one-line recipe before running it (no `@`/`-s`), so the UI stream carried an extra line the terminal reference
+(`make -s context-report`) does not. Fixed: ACTIONS["context-report"] now runs `["make","-s","context-report"]`
+(app.py). Re-verified with an SSE-framing-aware comparison (only "message"-type `data:` frames, matching what a
+real browser's default `es.onmessage` receives; the `cmd`/`done` named events are correctly invisible to it,
+exactly as console.js only listens for `done` and leaves `cmd` unhandled):
+diff <ui captured "message" frames> <make -s context-report output>  ->  no differences, byte for byte.
+tail -1 console/audit.log:
+{"ts":"2026-09-15T12:26:09Z","actor":"operator","action":"context-report","cmd":"make -s context-report","exit":0,"seconds":0.6,"job":"7f632150076e"}
+PASS G51 — streamed, audited (actor/command/exit/duration), byte-for-byte match with the terminal.
+
+=== G52 (diff, confirm, apply) ===
+POST /api/diff {kind:env, form:{POWER_HOST_OVERHEAD:41}} -> unified diff shown, secrets masked (••••3aYA etc), empty:false
+POST /api/apply (correct sig) -> {"written":".env",...}; grep confirms POWER_HOST_OVERHEAD=41 in .env; audit line written kind write, exit 0
+Reverted the same way (form:{POWER_HOST_OVERHEAD:""}) -> .env back to POWER_HOST_OVERHEAD= (blank, original state)
+POST /api/run {action:up} -> streamed: litellm/dinesh/monica/erlich/jared/gilfoyle Healthy, preflight "OK backend reachable", exit 0, 6.7s
+docker compose ps: all 13 services running healthy afterward.
+PASS G52 — diff before write, applies only after confirmation, up reaches a healthy stack.
+
+=== G53 (Teams screen matches the terminal; after plan 16) ===
+POST /api/run {action:member-add, params:{T:piedpiper,N:hendricks,R:builder}} -> same argv as the terminal
+(`make member-add T=piedpiper N=hendricks R=builder`); stream: team-render (6 members), team-bootstrap
+(forge user/token/team membership/LiteLLM key), `docker compose up -d --force-recreate hendricks`,
+container Healthy, model=qwen3.8-max loaded, exit 0, 15.9s.
+Mention test (Buzz CLI, smoke identity): "@Hendricks reply with just the word ack" -> reply "ack" within ~10s.
+Persona edit: POST /api/diff {kind:persona,name:hendricks,content:"...G53 console smoke edit."} -> diff shown;
+POST /api/apply -> written teams/piedpiper/personas/hendricks.md, follow-up job
+`docker compose up -d --force-recreate hendricks` only (no other container touched), exit 0, 0.5s.
+Cleanup: member-rm via the UI without confirm -> 409; with confirm:"member-rm" -> ran, team.toml/compose.yml/env
+roster updated; forge team memberships and user purged and the docker volume removed by hand afterward
+(pre-existing plan-16 Makefile quirk: `member-rm`'s forge/PURGE steps abort if the member already left
+team.toml first — not a plan 17 issue, worked around here, left as an observation).
+PASS G53 — member-add from the UI is the terminal's own command; the new member answers a mention;
+a persona edit diffs and force-recreates only that one container.
+
+=== G54 (job to score, destructive refusals) ===
+POST /api/run {action:down} without confirm -> 409 "type down to confirm" (down itself not run, to avoid taking
+down the live stack mid-execution; the identical confirm mechanism was exercised end-to-end by member-rm above).
+POST /api/run {action:member-rm,...} without confirm -> 409; with confirm -> ran (see G53).
+Job: POST /api/run {action:post-job, params:{T:piedpiper,text:"...add multiply_g54(a,b)...open a pull request."}}
+First attempt surfaced a real bug: console/post-job.sh's final echo line wrapped the literal word `approved` in
+bare backticks inside a double-quoted string, which bash parsed as command substitution
+("line 19: approved: command not found") — cosmetic (message still posted) but wrong; escaped the backticks.
+Builder (Gilfoyle) posted **Plan:** within ~13s of the mention.
+Approval: POST /api/run {action:approve-job, params:{C:<channel>,R:<thread-root>,note:"..."}}.
+First attempt surfaced a second real bug: console/approve-job.sh sent the approval with `--reply-to` but no
+`--mention`, and Buzz agents only start a new turn on an explicit mention (confirmed against the
+already-validated scripts/team-smoke.sh, which does mention the builder on its own approval message) — fixed
+by resolving the active team's builder pubkey from team.toml and adding `--mention`. Re-sent: Gilfoyle's turn
+started within 8s of the corrected approval.
+PR opened: demo-calc#101 "Add multiply_g54(a, b)", body "Spec: #100\n\n...", by gilfoyle.
+Pipeline (plan 16.5, unmodified) ran on its own: CI status success; **Conformance:** 4/4 — all met (dinesh);
+labels complexity/1, confidence/high, defect/none; **Score:** comment with the full rubric JSON, judge erlich.
+Jobs screen (GET /jobs) lists demo-calc#101 "multiply_g54(a, b)" — confirmed present in the rendered HTML.
+PASS G54 — a job posted and approved entirely from the console produced a PR whose scores show in Jobs;
+`down` and `member-rm` refuse (409) without the typed confirmation and run with it (member-rm exercised live;
+down's refusal exercised, its destructive run not exercised to avoid disrupting the live stack — the same
+confirm code path was already proven by member-rm).
+```
+
