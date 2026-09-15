@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Deterministic gate evidence and verdict (plan 16.5). Runs inside the gatekeeper's container: the token, the reviewer's and
+# the adversary's logins come from ~/.gitea.env (written by the entrypoint); no jq. The rule below IS the policy:
+#   ship <=> CI success on head AND the reviewer's last review is APPROVED, official and not dismissed
+#            AND the reviewer's last **Conformance:** m/n has m == n >= 1 AND the adversary has reviewed
+#            AND the defect label is none|medium|low AND the PR body names an existing spec issue with >= 1 checklist line
+# Usage: gate-signals <repo> <pr> -> KEY=VALUE lines ending with VERDICT= and REASONS=, then the diff (first 400 lines). Exit 3 = not ready.
+set -euo pipefail
+repo="${1:?repo}"; n="${2:?pr}"; . "$HOME/.gitea.env"; B="$GITEA_URL/api/v1"; H=(-H "Authorization: token $GITEA_TOKEN")
+pr=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n"); [[ $pr == *'"number":'* ]] || { echo "no such PR $repo#$n" >&2; exit 1; }
+sha=""; [[ $pr =~ \"head\":\{[^}]*\"sha\":\"([0-9a-f]{40})\" ]] && sha="${BASH_REMATCH[1]}"
+spec=""; [[ $pr =~ Spec:\ \#([0-9]+) ]] && spec="${BASH_REMATCH[1]}"
+ci="unknown"; st=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/commits/$sha/status"); [[ $st =~ \"state\":\"([a-z]+)\" ]] && ci="${BASH_REMATCH[1]}"
+# reviews: one record per review (the array split on its last key), the LAST submitted state per user wins
+rv=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n/reviews?limit=100" | awk -v RS='"pull_request_url"' '
+  { u=""; s=""; o=""; d=""
+    if (match($0, /"login":"[^"]+"/))        u=substr($0, RSTART+9,  RLENGTH-10)
+    if (match($0, /"state":"[A-Z_]+"/))      s=substr($0, RSTART+9,  RLENGTH-10)
+    if (match($0, /"official":(true|false)/)) o=substr($0, RSTART+11, RLENGTH-11)
+    if (match($0, /"dismissed":(true|false)/)) d=substr($0, RSTART+12, RLENGTH-12)
+    if (u != "" && s != "" && s != "PENDING") { st[u]=s; of[u]=o; dm[u]=d } }
+  END { for (u in st) print u, st[u], of[u], dm[u] }')
+rev_state=$(awk -v u="${REVIEWER_LOGIN:-}" '$1==u {print $2}' <<<"$rv"); rev_official=$(awk -v u="${REVIEWER_LOGIN:-}" '$1==u {print $3}' <<<"$rv"); rev_dismissed=$(awk -v u="${REVIEWER_LOGIN:-}" '$1==u {print $4}' <<<"$rv")
+adv_state=$(awk -v u="${ADVERSARY_LOGIN:-}" '$1==u {print $2}' <<<"$rv")
+approvals=$(awk '$2=="APPROVED" && $3=="true" && $4=="false"' <<<"$rv" | wc -l)
+# conformance: the reviewer's last PR comment starting with **Conformance:** m/n (one record per comment, split on "issue_url")
+conf=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/comments?limit=100" | awk -v RS='"issue_url"' -v u="${REVIEWER_LOGIN:-}" '
+  { l=""; c=""
+    if (match($0, /"login":"[^"]+"/)) l=substr($0, RSTART+9, RLENGTH-10)
+    if (match($0, /"body":"\*\*Conformance:\*\* [0-9]+\/[0-9]+/)) { c=substr($0, RSTART+25, RLENGTH-25) }
+    if (l == u && c != "") last=c }
+  END { print last }')
+conf_met="${conf%%/*}"; conf_total="${conf##*/}"; [ -n "$conf" ] || { conf_met=""; conf_total=""; }
+defect=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/issues/$n/labels" | grep -oE '"name":"defect/[a-z]+"' | tail -1 | cut -d'"' -f4 | sed 's|^defect/||' || true)
+criteria=""; if [ -n "$spec" ]; then sp=$(curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/issues/$spec"); [[ $sp == *'"number":'* ]] && criteria=$(grep -o '\- \[[ x]\]' <<<"$sp" | wc -l); fi
+[ "$ci" = success ] || [ "$ci" = failure ] || { echo "not ready: CI state is '$ci'" >&2; exit 3; }
+[ -n "$rev_state" ] || { echo "not ready: no submitted review from the reviewer (${REVIEWER_LOGIN:-?})" >&2; exit 3; }
+[ -n "$adv_state" ] || { echo "not ready: no attack review from the adversary (${ADVERSARY_LOGIN:-?})" >&2; exit 3; }
+reasons=""
+[ "$ci" = success ] || reasons+="CI $ci; "
+{ [ "$rev_state" = APPROVED ] && [ "$rev_official" = true ] && [ "$rev_dismissed" = false ]; } || reasons+="review ${rev_state}${rev_official:+ official=$rev_official}${rev_dismissed:+ dismissed=$rev_dismissed}; "
+{ [ -n "$conf_met" ] && [ "$conf_total" -ge 1 ] && [ "$conf_met" = "$conf_total" ]; } || reasons+="conformance ${conf:-missing}; "
+case "$defect" in none|medium|low) ;; "") reasons+="no defect label; " ;; *) reasons+="defect/$defect open; " ;; esac
+{ [ -n "$spec" ] && [ -n "$criteria" ] && [ "$criteria" -ge 1 ]; } || reasons+="spec issue ${spec:-missing}${criteria:+ ($criteria criteria)}; "
+verdict=ship; [ -z "$reasons" ] || verdict=no-ship
+printf 'REPO=%s\nPR=%s\nHEAD=%s\nCI=%s\nREVIEWER=%s\nREVIEW=%s\nREVIEW_OFFICIAL=%s\nREVIEW_DISMISSED=%s\nAPPROVALS=%s\nCONFORMANCE=%s\nADVERSARY=%s\nATTACK=%s\nDEFECT=%s\nSPEC=%s\nCRITERIA=%s\nVERDICT=%s\nREASONS=%s\n' \
+  "$repo" "$n" "$sha" "$ci" "${REVIEWER_LOGIN:-}" "$rev_state" "$rev_official" "$rev_dismissed" "$approvals" "${conf:-}" "${ADVERSARY_LOGIN:-}" "$adv_state" "${defect:-}" "$spec" "$criteria" "$verdict" "${reasons%; }"
+echo "--- diff (first 400 lines) ---"
+curl -sS "${H[@]}" "$B/repos/$GITEA_OWNER/$repo/pulls/$n.diff" | head -400

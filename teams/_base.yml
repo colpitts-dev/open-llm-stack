@@ -34,6 +34,9 @@ services:
       GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
       TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
       TEAM_NARRATE: ${TEAM_NARRATE:-off}   # off | tools | both: progress mirror into the job thread (plan 11; the entrypoint raises RUST_LOG when on)
+      AGENT_LOGIN_SUFFIX: ${AGENT_LOGIN_SUFFIX:-}   # plan 16.5: the entrypoint derives teammates' forge logins (name + suffix) for the gate script
+      TEAM_ATTACK_CHANNEL: ${TEAM_ATTACK_CHANNEL:-}   # plan 16.5: private channels the coordinator routes into (make team-bootstrap creates them)
+      TEAM_GATE_CHANNEL: ${TEAM_GATE_CHANNEL:-}
       RUST_LOG: info
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
