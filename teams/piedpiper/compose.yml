@@ -14,9 +14,9 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Jared
       BUZZ_PRIVATE_KEY: ${TEAM_JARED_PRIVATE_KEY:?run make team-render}
       BUZZ_ACP_SESSION_POLICY: channel
-      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${CONSOLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
       TEAM_ROSTER: "jared=coordinator=Jared=coordinator: routes every job and relays what is still open=${TEAM_JARED_PUBKEY:-};gilfoyle=builder=Gilfoyle=senior engineer: plans first, builds after approval=${TEAM_GILFOYLE_PUBKEY:-};dinesh=reviewer=Dinesh=developer and QA: reviews and checks conformance against the approved plan=${TEAM_DINESH_PUBKEY:-};monica=adversary=Monica=red team: attacks every PR blind, in her own channel=${TEAM_MONICA_PUBKEY:-};erlich=gatekeeper=Erlich=gatekeeper and judge: binary ship verdict from the evidence, plus the score, in his own channel=${TEAM_ERLICH_PUBKEY:-}"
-      OPENAI_COMPAT_MODEL: qwen3.8-max
+      OPENAI_COMPAT_MODEL: qwen3.8-q5
       OPENAI_COMPAT_API_KEY: ${TEAM_JARED_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
       GITEA_USER: jared
       GITEA_TOKEN: ${TEAM_JARED_GITEA_TOKEN:-}
@@ -35,9 +35,9 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Gilfoyle
       BUZZ_PRIVATE_KEY: ${TEAM_GILFOYLE_PRIVATE_KEY:?run make team-render}
       BUZZ_ACP_SESSION_POLICY: thread
-      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${CONSOLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
       TEAM_ROSTER: "jared=coordinator=Jared=coordinator: routes every job and relays what is still open=${TEAM_JARED_PUBKEY:-};gilfoyle=builder=Gilfoyle=senior engineer: plans first, builds after approval=${TEAM_GILFOYLE_PUBKEY:-};dinesh=reviewer=Dinesh=developer and QA: reviews and checks conformance against the approved plan=${TEAM_DINESH_PUBKEY:-};monica=adversary=Monica=red team: attacks every PR blind, in her own channel=${TEAM_MONICA_PUBKEY:-};erlich=gatekeeper=Erlich=gatekeeper and judge: binary ship verdict from the evidence, plus the score, in his own channel=${TEAM_ERLICH_PUBKEY:-}"
-      OPENAI_COMPAT_MODEL: qwen3.8-max
+      OPENAI_COMPAT_MODEL: qwen3.8-q5
       OPENAI_COMPAT_API_KEY: ${TEAM_GILFOYLE_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
       GITEA_USER: gilfoyle
       GITEA_TOKEN: ${TEAM_GILFOYLE_GITEA_TOKEN:-}
@@ -54,9 +54,9 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Dinesh
       BUZZ_PRIVATE_KEY: ${TEAM_DINESH_PRIVATE_KEY:?run make team-render}
       BUZZ_ACP_SESSION_POLICY: thread
-      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${CONSOLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
       TEAM_ROSTER: "jared=coordinator=Jared=coordinator: routes every job and relays what is still open=${TEAM_JARED_PUBKEY:-};gilfoyle=builder=Gilfoyle=senior engineer: plans first, builds after approval=${TEAM_GILFOYLE_PUBKEY:-};dinesh=reviewer=Dinesh=developer and QA: reviews and checks conformance against the approved plan=${TEAM_DINESH_PUBKEY:-};monica=adversary=Monica=red team: attacks every PR blind, in her own channel=${TEAM_MONICA_PUBKEY:-};erlich=gatekeeper=Erlich=gatekeeper and judge: binary ship verdict from the evidence, plus the score, in his own channel=${TEAM_ERLICH_PUBKEY:-}"
-      OPENAI_COMPAT_MODEL: qwen3.8-max
+      OPENAI_COMPAT_MODEL: qwen3.8-q5
       OPENAI_COMPAT_API_KEY: ${TEAM_DINESH_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
       GITEA_USER: dinesh
       GITEA_TOKEN: ${TEAM_DINESH_GITEA_TOKEN:-}
@@ -73,9 +73,9 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Monica
       BUZZ_PRIVATE_KEY: ${TEAM_MONICA_PRIVATE_KEY:?run make team-render}
       BUZZ_ACP_SESSION_POLICY: thread
-      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${CONSOLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
       TEAM_ROSTER: "jared=coordinator=Jared=coordinator: routes every job and relays what is still open=${TEAM_JARED_PUBKEY:-};gilfoyle=builder=Gilfoyle=senior engineer: plans first, builds after approval=${TEAM_GILFOYLE_PUBKEY:-};dinesh=reviewer=Dinesh=developer and QA: reviews and checks conformance against the approved plan=${TEAM_DINESH_PUBKEY:-};monica=adversary=Monica=red team: attacks every PR blind, in her own channel=${TEAM_MONICA_PUBKEY:-};erlich=gatekeeper=Erlich=gatekeeper and judge: binary ship verdict from the evidence, plus the score, in his own channel=${TEAM_ERLICH_PUBKEY:-}"
-      OPENAI_COMPAT_MODEL: qwen3.8-max
+      OPENAI_COMPAT_MODEL: qwen3.8-q5
       OPENAI_COMPAT_API_KEY: ${TEAM_MONICA_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
       GITEA_USER: monica
       GITEA_TOKEN: ${TEAM_MONICA_GITEA_TOKEN:-}
@@ -92,9 +92,9 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Erlich
       BUZZ_PRIVATE_KEY: ${TEAM_ERLICH_PRIVATE_KEY:?run make team-render}
       BUZZ_ACP_SESSION_POLICY: channel
-      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${CONSOLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-}
       TEAM_ROSTER: "jared=coordinator=Jared=coordinator: routes every job and relays what is still open=${TEAM_JARED_PUBKEY:-};gilfoyle=builder=Gilfoyle=senior engineer: plans first, builds after approval=${TEAM_GILFOYLE_PUBKEY:-};dinesh=reviewer=Dinesh=developer and QA: reviews and checks conformance against the approved plan=${TEAM_DINESH_PUBKEY:-};monica=adversary=Monica=red team: attacks every PR blind, in her own channel=${TEAM_MONICA_PUBKEY:-};erlich=gatekeeper=Erlich=gatekeeper and judge: binary ship verdict from the evidence, plus the score, in his own channel=${TEAM_ERLICH_PUBKEY:-}"
-      OPENAI_COMPAT_MODEL: qwen3.8-max
+      OPENAI_COMPAT_MODEL: qwen3.8-q5
       OPENAI_COMPAT_API_KEY: ${TEAM_ERLICH_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
       GITEA_USER: erlich
       GITEA_TOKEN: ${TEAM_ERLICH_GITEA_TOKEN:-}

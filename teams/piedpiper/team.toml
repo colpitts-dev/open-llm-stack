@@ -1,7 +1,7 @@
 # The default team (plan 16, pipeline shape since plan 16.5). Edit, then `make team-render`. Member order is the roster order and the allowlist order.
 name = "piedpiper"          # the team: directory name, TEAM_NAME in .env
 org = "piedpiper"           # the Gitea organisation the team works in (TEAM_GITEA_ORG): created if missing, reused if present
-model = "qwen3.8-max"        # every member's model unless a member sets its own; a model_name in proxy/config.yaml. qwen3.8-max since 2026-09-15: 3/3 clean smokes vs 1-in-3 plan-format misses on ornith-max (plan 16.5 §8)
+model = "qwen3.8-q5"
 # ci_label = "python"       # optional: forces TEAM_CI_LABEL in .env (python = bundled runner, ci = the forge's); unset = .env keeps its own value
 humans = []                 # pubkeys of the people the agents obey, owner first; blank here = TEAM_ALLOWLIST in .env
 

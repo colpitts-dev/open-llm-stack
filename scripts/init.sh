@@ -33,6 +33,11 @@ if blank BUZZ_AGENT_PRIVATE_KEY; then
   set_if_blank BUZZ_AGENT_PRIVATE_KEY "$(awk '/Secret key:/{print $3}' <<<"$out")"
   set_if_blank BUZZ_AGENT_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
 fi
+if blank CONSOLE_PRIVATE_KEY; then
+  out=$(gen_key)
+  set_if_blank CONSOLE_PRIVATE_KEY "$(awk '/Secret key:/{print $3}' <<<"$out")"
+  set_if_blank CONSOLE_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
+fi
 
 if blank TEAM_SMOKE_PRIVATE_KEY; then   # the smoke's throwaway human identity; member keys come from the renderer below
   out=$(gen_key)

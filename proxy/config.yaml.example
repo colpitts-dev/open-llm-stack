@@ -18,6 +18,22 @@
 # Adding a model = edit this file + `make reload`.
 
 model_list:
+  - model_name: qwen3.8-q5
+    litellm_params:
+      model: ollama_chat/smtek/Qwen3.8-27B:Q5_K_XL-96k
+      api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-15: 20141 MiB on the GPU
+      keep_alive: "5m"
+    model_info:
+      mode: chat
+      context_window: 131072
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768
+      supports_function_calling: true # native tool calls, not LiteLLM JSON-mode fallback
+      supports_vision: true
+      model_revision: "ollama:smtek/Qwen3.8-27B:Q5_K_XL-96k:2026-09-15"
+      execution_locus: local
+
   - model_name: qwen3.6-max
     litellm_params:
       model: ollama_chat/qwen3.6-max
@@ -73,6 +89,37 @@ model_list:
       max_input_tokens: 65536         # 131072 - 32768 - 32768
       max_output_tokens: 32768
       model_revision: "ollama:qwen3.8-max:2026-09-14"
+      execution_locus: local
+
+  - model_name: glm-4.7-flash
+    litellm_params:
+      model: ollama_chat/glm-4.7-flash:latest
+      api_base: os.environ/LLM_BASE_URL
+      num_ctx: 131072                 # = context_window; make model-fit 2026-09-15: 29392 MiB on the GPU (5 MiB under budget; 2048 MiB headroom already reserved)
+      keep_alive: "5m"
+    model_info:
+      mode: chat
+      context_window: 131072
+      max_input_tokens: 65536         # 131072 - 32768 - 32768
+      max_output_tokens: 32768        # thinking model: reasoning counts
+      supports_function_calling: true
+      model_revision: "ollama:glm-4.7-flash:2026-09-15"
+      execution_locus: local
+
+  - model_name: devstral-small-2
+    litellm_params:
+      model: ollama_chat/devstral-small-2:latest
+      api_base: os.environ/LLM_BASE_URL
+      num_ctx: 49152                  # = context_window; make model-fit 2026-09-15: 26264 MiB on the GPU (65536 spills to CPU: dense 40-layer KV)
+      keep_alive: "5m"
+    model_info:
+      mode: chat
+      context_window: 49152
+      max_input_tokens: 28672         # 49152 - 8192 - 12288
+      max_output_tokens: 8192         # non-thinking model: 32768 would leave 4096 input
+      supports_function_calling: true
+      supports_vision: true
+      model_revision: "ollama:devstral-small-2:2026-09-15"
       execution_locus: local
 
   - model_name: embed

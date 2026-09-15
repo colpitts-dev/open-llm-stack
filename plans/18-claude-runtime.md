@@ -1,6 +1,6 @@
 # Plan 18 — Claude Code as a team runtime: local models through the gateway, hosted models from an opt-in include
 
-**Spec:** `docs/spec.md` (this plan adds §5.20 and gates G55–G59). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
+**Spec:** `docs/spec.md` (this plan adds §5.20 and gates G55–G60). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
 **Sequence:** 18 (after 16.5 and 17; the builder is whoever `team-roster.py role builder` names, Gilfoyle on the default team since plan 16.5). Requires plans 15 and 16 executed (17 is independent). Adds one image (`agents/claude/Dockerfile`, the second opt-in build after goose), one probe, one include file for the registry with a switch script, one entrypoint branch, four make targets, `.env` lines, docs. No new service, port or network.
 **Execute with:** `/execute plans/18-claude-runtime.md`
 **Network:** `docker pull` and the two pinned `npm install`s inside the image build; hosted models need egress to their provider. Everything else below was verified on the reference host on 2026-09-14 (Node 22.22 on the host for the scratch runs; the image pins Node 22).
@@ -26,7 +26,7 @@
 |---|---|---|
 | image | `agents/claude/Dockerfile`, `make claude-image` → `open-llm-stack/claude-agent:2.1.270` | `node:22-bookworm-slim` by digest + `@anthropic-ai/claude-code@2.1.270` (unmodified, as published) + `@agentclientprotocol/claude-agent-acp@0.77.0` + the sprig binaries (`buzz`, `buzz-acp`, `buzz-dev-mcp`, git helpers) as in the goose image |
 | member switch | `team.toml`: `runtime = "claude"`, `model = "<registry or frontier name>"`, `effort = "low\|medium\|high\|xhigh\|max"` (optional) | plan 16 renderer: `IMAGES["claude"]`, env `TEAM_RUNTIME=claude`, `TEAM_EFFORT`; `make member-claude N=<m> MODE=local\|hosted [M=<model>]` sets the keys, renders, recreates one container |
-| entrypoint | `scripts/team-entrypoint.sh` branch `claude)` | `ANTHROPIC_BASE_URL=<LiteLLM root>`, `ANTHROPIC_AUTH_TOKEN=<member virtual key>`, `ANTHROPIC_MODEL=<model>`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CONFIG_DIR=/home/agent/.claude`, telemetry and auto-update off, persona written to `/home/agent/.claude/CLAUDE.md`, agent command `claude-agent-acp`, `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` unset so nothing but the gateway credential is ever in play |
+| entrypoint | `scripts/team-entrypoint.sh` branch `claude)` | `ANTHROPIC_BASE_URL=<LiteLLM root>`, `ANTHROPIC_AUTH_TOKEN=<member virtual key>`, `ANTHROPIC_MODEL=<model>`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CONFIG_DIR=/home/agent/.claude`, telemetry and auto-update off, persona written to `/home/agent/.claude/persona.md` and `CLAUDE.md` regenerated from persona + the agent's own `memory.md` (never overwriting it), agent command `claude-agent-acp`, `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` unset so nothing but the gateway credential is ever in play |
 | probe | `agents/claude/acp-probe.py` (Python, stdlib) | initialize → session/new → one prompt, prints updates and the stop reason; the gate for the adapter in both modes |
 | hosted registry | `proxy/frontier.yaml.example` (provider blocks: Anthropic, Fireworks, a commented OpenAI-compatible block), `proxy/frontier.yaml` (gitignored; `make init` writes `model_list: []`), `include: [frontier.yaml]` in `proxy/config.yaml.example`, compose mount `./proxy/frontier.yaml:/app/frontier.yaml:ro`, `scripts/frontier.sh on\|off\|status` behind `make frontier-on` / `make frontier-off` | `on` copies only the provider blocks whose key is set in `.env`, then reloads; LiteLLM `include` appends `model_list`; a missing file makes LiteLLM refuse to start, so `make init` always creates it |
 | smoke rule | `scripts/smoke-test.sh` `test_litellm` | `proxy/config.yaml` on disk names no closed-weight model or router; every `/v1/models` entry with `execution_locus: cloud` is a `model_name` in `proxy/frontier.yaml` on disk; every closed-weight id in `/v1/models` has `execution_locus: cloud` |
@@ -34,7 +34,7 @@
 
 **Measured today (reference host).** Claude Code 2.1.270 on Node 22 answers through LiteLLM to `ornith-max`: `--output-format json` → `{"subtype":"success","stop_reason":"end_turn","num_turns":2,"duration_ms":6033,"total_cost_usd":0.01266,"usage":{"input":2377,"output":31},"session_id":"447e…","modelUsage":["ornith-max"]}`; through the adapter: `initialize` → `protocolVersion 1, authMethods []`, `session/new` → `configOptions [mode, model, effort, fast]`, modes `default, acceptEdits, plan, auto, bypassPermissions`, a prompt → `stopReason end_turn`, usage 28 827 input tokens (Claude Code's own system prompt and tool schemas: prefill per turn on a local hybrid model, cached by the per-agent slot from plan 14), the answer arrived as `agent_thought_chunk` only (the local reasoning model answered inside its thinking block: a persona-quality item for G56, lever in §5). Without any credential the adapter returns `{"code":-32000,"message":"Authentication required"}` on the prompt. LiteLLM's `/v1/messages` and `/v1/messages/count_tokens` answer for `ornith-max` (200) and map the model's reasoning to a `thinking` block ahead of the text.
 
-**Success criteria.** G55 — `make claude-image` builds; `claude --version` prints `2.1.270 (Claude Code)`; `acp-probe.py` completes initialize, session/new and one prompt against the adapter in the image with the local model. G56 (mode A) — `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local`, two consecutive `make team-smoke` passes, the metrics row recorded, no `ANTHROPIC_API_KEY` in the container, spend rows under Dinesh's alias. G57 (mode B, Anthropic) — `ANTHROPIC_API_KEY` in `.env`, `make frontier-on` lists the Anthropic block as on, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted` (Sonnet 5), two smoke passes, spend rows non-zero at Anthropic rates under Dinesh's alias, `make test` passes with the new rule. G58 (mode B, Fireworks) — `FIREWORKS_AI_API_KEY` in `.env`, `make frontier-on` adds the Fireworks block, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted M=kimi-k2p7-code`, one smoke pass, spend rows non-zero under `fireworks_ai/…`; `make frontier-off` then `make test` unchanged. G59 (flags off) — every member on `buzz-agent`, `frontier.yaml` empty: `make test` output identical to plan 16's run; no team container carries an `ANTHROPIC_*` or `CLAUDE_*` variable.
+**Success criteria.** G55 — `make claude-image` builds; `claude --version` prints `2.1.270 (Claude Code)`; `acp-probe.py` completes initialize, session/new and one prompt against the adapter in the image with the local model. G56 (mode A) — `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local`, two consecutive `make team-smoke` passes, the metrics row recorded, no `ANTHROPIC_API_KEY` in the container, spend rows under Dinesh's alias. G57 (mode B, Anthropic) — `ANTHROPIC_API_KEY` in `.env`, `make frontier-on` lists the Anthropic block as on, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted` (Sonnet 5), two smoke passes, spend rows non-zero at Anthropic rates under Dinesh's alias, `make test` passes with the new rule. G58 (mode B, Fireworks) — `FIREWORKS_AI_API_KEY` in `.env`, `make frontier-on` adds the Fireworks block, `make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted M=kimi-k2p7-code`, one smoke pass, spend rows non-zero under `fireworks_ai/…`; `make frontier-off` then `make test` unchanged. G59 (flags off) — every member on `buzz-agent`, `frontier.yaml` empty: `make test` output identical to plan 16's run; no team container carries an `ANTHROPIC_*` or `CLAUDE_*` variable. G60 (memory survives a restart) — a line written to `memory.md` inside the container is still there after `--force-recreate`, is present in the regenerated `CLAUDE.md`, and at least one session transcript exists under `projects/`.
 
 **Out of scope.** Subscription credentials (decided above); an escalation cascade (per-member switch only); Bedrock, Agent Platform and Foundry (route them through LiteLLM as registry entries when needed); MCP servers passed to the adapter (buzz-dev-mcp stays off as with goose: Claude Code has its own tools, the `buzz` CLI is on `PATH`); Fireworks' `fireconnect` CLI (it configures Claude Code for Fireworks directly, bypassing the gateway and the ledger).
 
@@ -48,7 +48,8 @@
 | `scripts/frontier.sh` | new: `on` (blocks with a key present), `off`, `status` |
 | `proxy/config.yaml.example` | `include: [frontier.yaml]` at the top; header comment |
 | `scripts/init.sh` | create `proxy/frontier.yaml` with `model_list: []` when missing |
-| `scripts/team-entrypoint.sh` | `claude)` branch |
+| `scripts/team-entrypoint.sh` | `claude)` branch; persona/memory split (Task 5) |
+| `teams/<team>/personas/<member>.md` | one line telling the agent to write durable notes to `~/.claude/memory.md`, not `CLAUDE.md` (Task 5) |
 | `scripts/team-render.py` (plan 16) | `IMAGES["claude"]`, `effort` key, env line |
 | `scripts/smoke-test.sh` | hosted-models rule; `test_team_runtime` accepts `claude` |
 | `docker-compose.yml` | `litellm` mounts `./proxy/frontier.yaml:/app/frontier.yaml:ro` |
@@ -59,6 +60,7 @@
 ## 3. Dependencies and verified facts (reference host, 2026-09-14)
 
 - **Packages.** `@anthropic-ai/claude-code@2.1.270`: `bin.claude`, `engines.node >=22.0.0`, 214 MB installed. `@agentclientprotocol/claude-agent-acp@0.77.0`: `bin.claude-agent-acp`, `engines.node >=22`, depends on `@anthropic-ai/claude-agent-sdk 0.3.270` (bundles its own copy of the CLI), `@agentclientprotocol/sdk 1.4.0`, `zod 4.6.5`; 271 MB with the SDK. Both installed on the host (`npm view` and a scratch `npm install`) and run on Node 22.22.
+- **The pin stays at 2.1.270 for this execution.** Checked 2026-09-15: `npm view @anthropic-ai/claude-code version` → `2.1.272`, and the reference host's own CLI is `2.1.272 (Claude Code)`. Every measurement in this plan was taken against 2.1.270, so execute against 2.1.270 and keep the gate honest. Bump afterwards as its own change, per §5 Pin bumps.
 - **Base image.** `node:22-bookworm-slim`, linux/amd64 digest `sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96` (`docker manifest inspect`, 2026-09-14). Record it in spec §1 with the date.
 - **Adapter behaviour** (from its `dist/*.js`): reads `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_HEADERS`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_EXECUTABLE`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`; refuses subscriptions (`CLAUDE_SUBSCRIPTION_NOT_SUPPORTED_REASON = "claude_subscription_not_supported"`); config ids `mode` (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`), `model`, `effort`, `fast`; accepts client MCP servers on `session/new`.
 - **buzz-acp** (`--help`): `--agent-command`/`BUZZ_ACP_AGENT_COMMAND`, `--agent-args`, `--mcp-command` (default `buzz-dev-mcp`, `""` disables), `--system-prompt-file` (`BUZZ_ACP_SYSTEM_PROMPT_FILE=/home/agent/.prompt.md`), `--permission-mode` (default `bypassPermissions`, "for agents that support `session/set_config_option` with `configId: "mode"` (e.g. `claude-agent-acp`)"), `--effort-level` (through `set_config_option` when advertised, non-fatal otherwise), `--session-title`. Its system prompt delivery is adapter-specific (goose: `_goose/unstable/session/system-prompt/set`); this plan delivers the persona through Claude Code's own `CLAUDE.md`, so it does not depend on buzz-acp support. **Verify at execution** that a probe prompt "what is your name" answers with the persona name.
@@ -221,7 +223,9 @@ model_list:
 # provider currently lists. Blocks are delimited by "# provider: <name> key: <VAR>" lines in the example.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-set -a; . ./.env; set +a
+# Export only the provider keys, rather than sourcing .env whole: one unquoted value with a space in it would
+# otherwise run as a command and kill the script under `set -e`, before anything is written.
+eval "$(grep -E '^(ANTHROPIC_API_KEY|FIREWORKS_AI_API_KEY|HOSTED_API_KEY|HOSTED_API_BASE)=' ./.env 2>/dev/null | sed 's/^/export /')"
 EX=proxy/frontier.yaml.example; OUT=proxy/frontier.yaml
 case "${1:-status}" in
   on)
@@ -231,6 +235,10 @@ case "${1:-status}" in
       /^# provider: / { split($0, p, " "); var=p[5]; on = (ENVIRON[var] != ""); next }
       /^model_list:/ { next }
       { if (on) print }' "$EX" >> "$OUT"
+    # A provider whose block is commented out in the example (openai-compatible) contributes only comment lines,
+    # leaving a bare "model_list:" that YAML reads as null, not []. LiteLLM extends list keys from an include and
+    # refuses to start on the result, taking the stack with it. Fall back to an explicit empty list.
+    grep -qE '^[[:space:]]+- model_name:' "$OUT" || printf 'model_list: []\n' > "$OUT"
     for line in $(grep -E '^# provider: ' "$EX" | awk '{print $3":"$5}'); do name=${line%%:*}; var=${line##*:}; if [ -n "${!var:-}" ]; then kept="$kept $name"; else skipped="$skipped $name"; fi; done
     docker compose restart litellm >/dev/null && echo "hosted models on:${kept:- none}${skipped:+ (no key, skipped:$skipped)}; make test applies the hosted-models rule" ;;
   off)
@@ -296,7 +304,14 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 ```bash
   claude)
     command -v claude >/dev/null || { echo "TEAM_RUNTIME=claude but this image has no claude binary (make claude-image; make member-claude N=$TEAM_MEMBER MODE=…)" >&2; exit 1; }
-    mkdir -p "$CLAUDE_CONFIG_DIR" && cp /home/agent/.prompt.md "$CLAUDE_CONFIG_DIR/CLAUDE.md"   # persona as Claude Code user memory, loaded every session
+    # Policy and memory are separate files with separate lifetimes. /home/agent is a persisted named volume
+    # (plan 16 renderer: team-<member>:/home/agent), so anything written here survives --force-recreate.
+    # persona.md is ours and is refreshed every boot; memory.md is the agent's and is created once, never
+    # overwritten; CLAUDE.md is regenerated from the two so the session loads both.
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    cp /home/agent/.prompt.md "$CLAUDE_CONFIG_DIR/persona.md"
+    [ -f "$CLAUDE_CONFIG_DIR/memory.md" ] || printf '# Memory\n\nDurable notes. This file is never overwritten by the entrypoint.\n\n' > "$CLAUDE_CONFIG_DIR/memory.md"
+    cat "$CLAUDE_CONFIG_DIR/persona.md" "$CLAUDE_CONFIG_DIR/memory.md" > "$CLAUDE_CONFIG_DIR/CLAUDE.md"
     unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN   # only the gateway credential is ever in play
     export ANTHROPIC_BASE_URL="${OPENAI_COMPAT_BASE_URL%/v1}" ANTHROPIC_AUTH_TOKEN="$OPENAI_COMPAT_API_KEY" \
            ANTHROPIC_MODEL="$OPENAI_COMPAT_MODEL" ANTHROPIC_DEFAULT_HAIKU_MODEL="${TEAM_FAST_MODEL:-$OPENAI_COMPAT_MODEL}" \
@@ -308,9 +323,21 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 
 `OPENAI_COMPAT_MODEL` is the member's `model` (plan 16 renders it): a `proxy/config.yaml` name in mode A, a `frontier.yaml` name in mode B; the entrypoint's registry read (plan 08) resolves caps for either since `/model/info` lists included entries (**verify at execution**). `TEAM_FAST_MODEL` (optional, renderer key `fast_model`) names the Haiku-class model for Claude Code's fast lane; default is the member's own model.
 
+**The persona must tell the agent where to write.** `CLAUDE.md` is regenerated at every boot, so a note written there is lost. Add one line to the persona text in `teams/<team>/personas/<member>.md`: *"Record anything you need to remember between sessions in `~/.claude/memory.md`. Do not edit `CLAUDE.md`; it is regenerated at start-up."* Without that line the split above changes nothing — the agent still writes to the file that gets rebuilt.
+
+**Verify at execution, before relying on the concatenation.** Check whether the pinned CLI resolves `@`-imports inside `CLAUDE.md` (a `CLAUDE.md` whose body is `@persona.md` and `@memory.md`). If it does, prefer imports: `CLAUDE.md` then stays agent-writable and the entrypoint only needs to create it when missing. If it does not, keep the `cat`. Decide during G55 and record which in §8; do not assume either way. `--append-system-prompt-file` exists in 2.1.270 (§3) but the agent command is `claude-agent-acp`, not `claude`, and `BUZZ_ACP_AGENT_ARGS` goes to the adapter rather than the CLI — do not plan on injecting the persona that way without first proving the adapter forwards it.
+
 ### Task 6 — docs
 
-- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.20 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G55–G59.
+- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.20 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G55–G60. §5.20 also gets a short **"Memory: three layers, three owners"** subsection, so the next runtime added does not re-litigate it:
+
+  | Layer | Scope | Who writes it | Lifetime | Where |
+  |---|---|---|---|---|
+  | Policy / persona | one member | we do, from `team.toml` | refreshed every boot | `.prompt.md` → `$CLAUDE_CONFIG_DIR/persona.md` |
+  | Agent memory | one member | the agent | created once, never overwritten | `$CLAUDE_CONFIG_DIR/memory.md`, `projects/<slug>/memory/`, on the `team-<member>` volume |
+  | Shared team memory | every member | we do, reviewed like code | git history | a committed `CLAUDE.md` in the repository the agents work in |
+
+  With one rule stated plainly: **shared state between agents lives in the git repository, not in a shared agent-memory service.** It is diffable, revertable, and every member picks it up by opening the directory. `$CLAUDE_CONFIG_DIR` is per-member and must not be treated as shared.
 - `README.md`: "Claude Code as a runtime" after the runtimes paragraph: what "runs Claude Code" means here (plain text, per Anthropic's branding rule), mode A ("unsupported by Anthropic, documented by LiteLLM"), mode B with `make frontier-on`, the provider keys, the egress warning, adding a provider block (copy a block, name the key variable in its marker line), and one sentence: subscription login is not offered by the stack, with the terms reference and the reason.
 - `AGENTS.md`: replace the closed-weight-runtimes line with: "Claude Code is an opt-in runtime per member (`runtime = "claude"`, plan 18): local models through LiteLLM, or hosted models only from `proxy/frontier.yaml` (`make frontier-on`, provider keys in `.env`). `proxy/config.yaml` stays open weights and local; the smoke enforces it. No subscription credentials, ever (spec §5.20)."
 
@@ -322,12 +349,16 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 - **Hosted open weights are still egress.** Kimi and GLM on Fireworks are open weights, but the code leaves the host; that is why they live in the include, not in `proxy/config.yaml`, and why the smoke keys on `execution_locus: cloud`, not on weights.
 - **Provider slugs drift.** The example names slugs with a date; `scripts/frontier.sh status` prints what the provider lists. Adding a provider is a block in the example with a `# provider: <name> key: <VAR>` marker and a key in `.env`; no code.
 - **Budgets.** Per-member virtual keys (plan 15) take `max_budget`; set one on every member that runs a hosted model. Not gated here; documented.
-- **Pin bumps.** Two pins (`CLAUDE_CODE_VERSION`, `CLAUDE_ACP_VERSION`) and one digest; the adapter's bundled SDK carries its own CLI copy, so the two versions need not match, but keep them close. A bump re-runs G55 and one smoke per mode in use.
+- **Pin bumps.** Two pins (`CLAUDE_CODE_VERSION`, `CLAUDE_ACP_VERSION`) and one digest; the adapter's bundled SDK carries its own CLI copy, so the two versions need not match, but keep them close. A bump re-runs G55 and one smoke per mode in use. The CLI version string appears in **four** places and they must move together, or G55 fails: `agents/claude/Dockerfile` (`ARG CLAUDE_CODE_VERSION`), the `claude-image` target and tag in `Makefile`, `IMAGES["claude"]` in `scripts/team-render.py`, and the §1 image row in `docs/spec.md`. G55 asserting the version string is what makes a partial bump fail loudly; keep that assertion.
+- **Session continuity.** The adapter calls `session/new` per connection, so every session starts with fresh context whatever is on disk. `--resume` and `--session-id` exist in 2.1.270 but the adapter does not drive them. Do not design as though the harness remembers across sessions: the repository is the memory, and the `CLAUDE.md` load at session start is how each new session reads it.
+- **Sidekick's escalation cascade stays out of scope** (see §1). Reviewed 2026-09-15: the orchestrator's own metric is currently wrong in three places (`report.py:31` computes the local share over steps attempted rather than steps planned; `loop.py:31,92` label attempt 4+ as first-try once `max_retries > 2`; `loop.py:94-98` drop orchestrator-injected imports on the thrash path), its only end-to-end benchmark dictates the algorithm line by line against tests written in advance, and its API planner has never executed. This plan is the substrate and is worth landing on its own — mode A alone measures what the ~29 k-token harness prefill costs on a local model, a number that work needs either way. Revisit coupling once those defects are fixed, a generation benchmark passes, and one live escalation has been measured.
 - **Cloud providers for Claude models.** Bedrock, Agent Platform and Foundry go through LiteLLM as `bedrock/…` or `vertex_ai/…` blocks in the include, keeping the one-ledger property; the adapter's own `CLAUDE_CODE_USE_*` path is not used.
 
 ## 6. Testing strategy
 
-Image and probe first (G55, local model). Mode A on Dinesh (G56) with the metrics row against plan 12's table. Mode B only with real keys in `.env` (G57 Anthropic, G58 Fireworks), then `make frontier-off` and `make test`. Flags-off regression last (G59). Numbers into §8.
+Image and probe first (G55, local model; decide the `@`-import question there and record it). Mode A on Dinesh (G56) with the metrics row against plan 12's table, then the restart check on the same member while it is still on the claude runtime (G60). Mode B only with real keys in `.env` (G57 Anthropic, G58 Fireworks), then `make frontier-off` and `make test`. Flags-off regression last (G59). Numbers into §8.
+
+G60 is the one gate that fails against a naive entrypoint. If it passes on the first try, check that the marker line was actually written before the recreate — a green G60 with an empty `memory.md` means the test did not run, not that the design works.
 
 ## 7. Validation commands
 
@@ -341,6 +372,15 @@ docker run --rm --add-host host.docker.internal:host-gateway -e ANTHROPIC_BASE_U
 make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=local && make team-smoke && make team-smoke
 docker compose exec -T $(python3 scripts/team-roster.py role builder | awk 'NR==1') sh -c 'env | grep -cE "^ANTHROPIC_API_KEY="'   # 0
 docker compose exec -T litellm-db psql -U litellm -d litellm -Atc "select metadata->>'user_api_key_alias', model, count(*) from \"LiteLLM_SpendLogs\" where \"startTime\" > now()-interval '20 minutes' group by 1,2"
+
+# G60 memory and sessions survive a container restart (run while the builder is on the claude runtime, after G56)
+M=$(python3 scripts/team-roster.py role builder | awk 'NR==1')
+docker compose exec -T $M sh -c 'echo "- restart marker $(date -u +%FT%TZ)" >> /home/agent/.claude/memory.md'
+docker compose up -d --force-recreate --wait $M
+docker compose exec -T $M sh -c 'grep -c "restart marker" /home/agent/.claude/memory.md'          # >= 1: the agent's file was not overwritten
+docker compose exec -T $M sh -c 'grep -c "restart marker" /home/agent/.claude/CLAUDE.md'          # >= 1: the regenerated file carries it
+docker compose exec -T $M sh -c 'ls /home/agent/.claude/projects/*/ | grep -c jsonl'              # >= 1: session transcripts persist
+docker compose exec -T $M sh -c 'cmp -s /home/agent/.prompt.md /home/agent/.claude/persona.md && echo persona-refreshed'
 
 # G57 mode B, Anthropic (ANTHROPIC_API_KEY in .env)
 bash -n scripts/frontier.sh && make frontier-on && ./scripts/frontier.sh status && make member-claude N=$(python3 scripts/team-roster.py role builder | awk 'NR==1') MODE=hosted && make team-smoke && make team-smoke

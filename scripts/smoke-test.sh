@@ -195,6 +195,18 @@ EOF
   curl -fsS -H "$judge" "$base/repos/$org/demo-calc/issues/$n/comments" | jq -e '[.[] | select(.body|startswith("**Score:**"))] | length > 0' >/dev/null && echo "score comment present" || fail "no score comment"
 }
 
+test_console() {   # G50: every screen 200 in < 2 s, foreign Host rejected, POST without the token rejected (plan 17)
+  local base="http://${BIND_HOST}:${CONSOLE_PORT:-3004}"
+  echo "--- console: screens"
+  curl -fsS -m 3 -o /dev/null "$base/overview" 2>/dev/null || { echo "(console not running: make console; skipped)"; return 0; }
+  for s in overview models setup teams jobs runs audit; do
+    local t; t=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' "$base/$s"); echo "$s -> $t"
+    [[ $t == 200* ]] || fail "console screen $s not 200"; awk -v x="${t#* }" 'BEGIN{exit !(x < 2.0)}' || fail "console screen $s slower than 2 s"
+  done
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$base/overview")" = 400 ] && echo "foreign Host rejected" || fail "foreign Host accepted"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"action":"stack-status"}' "$base/api/run")" = 403 ] && echo "POST without token rejected" || fail "POST without token accepted"
+}
+
 # --- dispatcher: one section per profile in COMPOSE_PROFILES ---
 has_profile litellm && test_litellm
 has_profile openwebui && test_openwebui
@@ -223,4 +235,5 @@ has_profile team && test_team_narrate
 has_profile team && test_team_runtime
 has_profile team && test_team_score
 has_profile team && test_team_gate
+[ -n "${CONSOLE_PORT:-}" ] && test_console
 echo "smoke test finished"
