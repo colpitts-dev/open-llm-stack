@@ -1,6 +1,6 @@
 # Plan 17 — The console: a host-side window onto the stack's files and scripts, port 3004
 
-**Spec:** `docs/spec.md` (this plan adds §5.18 and gates G45–G49, plus G39 for `make stack-status`, moved here from plan 15 on 2026-09-14 because the console owns its data contract). **Rules:** `AGENTS.md`. **Knowledge:** plan 11 §5.12 (milestone lines in agent logs), plan 13 §5.14 (scores, judge token), plan 14 §5.15 (`context-probe`, `context-report`, `model-fit`), plan 15 (`stack-status` JSON, `cost-report`, virtual keys), plan 16 (`teams/<team>/team.toml`, `team-status`, `member-add`, `team-new`, `agents/roles/`, `teams/<team>/personas/`).
+**Spec:** `docs/spec.md` (this plan adds §5.19 and gates G50–G54, plus G39 for `make stack-status`, moved here from plan 15 on 2026-09-14 because the console owns its data contract). **Rules:** `AGENTS.md`. **Knowledge:** plan 11 §5.12 (milestone lines in agent logs), plan 13 §5.14 (scores, judge token), plan 14 §5.15 (`context-probe`, `context-report`, `model-fit`), plan 15 (`stack-status` JSON, `cost-report`, virtual keys), plan 16 (`teams/<team>/team.toml`, `team-status`, `member-add`, `team-new`, `agents/roles/`, `teams/<team>/personas/`).
 **Sequence:** 17. Requires plans 15 and 16 executed. Adds one directory (`console/`: one Python file, one CSS file, one JS file), one make target, one host port (**3004**, loopback), a console Buzz identity minted by `make init`, a `console` section in the smoke test. No new service, image, build, network, container or Python package: the console is a host process like `init.sh` and `bootstrap-*.sh`.
 **Execute with:** `/execute plans/17-console.md`
 **No internet at execution.** Nothing is downloaded: no htmx, no fonts, no CDN. Every mechanism below was verified on the reference host on 2026-09-14 (Python 3.12.3, Docker Compose v5.1.3).
@@ -48,11 +48,11 @@ make console        # python3 console/app.py  (BIND_HOST:CONSOLE_PORT, default 1
 
 Data flows: screens call the same scripts the terminal does (`make stack-status`, `team-status`, `score-report`, `context-report`) with a 10 s in-process cache for the status JSON; actions are an allowlist of named commands mapped to argv (never a shell string built from input); writes go through one function that reads the file, computes the diff, waits for confirmation and writes atomically (`tmp` + `os.replace`); streaming uses chunked `text/event-stream` with the job's lines replayed on reconnect.
 
-**Phases** (tasks below are ordered so execution can stop at a phase boundary with green gates): 0 the status JSON (plan 15, done); 1 Setup + Overview + Models (G45–G47); 2 Teams (G48); 3 Jobs + Runs + Audit (G49). Phase 4 (intranet: container image, Gitea OIDC, TLS) is a later plan.
+**Phases** (tasks below are ordered so execution can stop at a phase boundary with green gates): 0 the status JSON (plan 15, done); 1 Setup + Overview + Models (G50–G52); 2 Teams (G53); 3 Jobs + Runs + Audit (G54). Phase 4 (intranet: container image, Gitea OIDC, TLS) is a later plan.
 
 **Security notes for the record.** The console holds the master key, the admin token and runs `make`: the most privileged process in the stack. Loopback by default and never auto-exposed; `Host` allowlist; per-process token on every state-changing request, delivered in the page and echoed in a header; `Origin`/`Sec-Fetch-Site` checks; one worker; typed confirmation for destructive actions; secrets masked; append-only audit shown in the UI; no arbitrary shell, only named actions with validated parameters.
 
-**Success criteria.** G45 — `make console` binds only `BIND_HOST:3004`; every screen answers 200 with real data in under 2 s; the smoke's new `console` section checks each screen, a foreign-`Host` request (400), a POST without the token (403). G46 — `make context-report` run from the UI streams its output, lands in `console/audit.log` with exit code and duration, and its captured output equals the terminal's byte for byte. G47 — a `.env` edit from Setup shows a diff, applies only after confirmation, and `make up` from the wizard reaches healthy. G48 — `member-add` from the UI runs the same command as the terminal and the new member answers a mention; a persona edit shows its diff and force-recreates only that container. G49 — a job posted from the console produces a PR whose scores show in Jobs; `make down` and `member-rm` are refused without the typed confirmation and run with it.
+**Success criteria.** G50 — `make console` binds only `BIND_HOST:3004`; every screen answers 200 with real data in under 2 s; the smoke's new `console` section checks each screen, a foreign-`Host` request (400), a POST without the token (403). G51 — `make context-report` run from the UI streams its output, lands in `console/audit.log` with exit code and duration, and its captured output equals the terminal's byte for byte. G52 — a `.env` edit from Setup shows a diff, applies only after confirmation, and `make up` from the wizard reaches healthy. G53 — `member-add` from the UI runs the same command as the terminal and the new member answers a mention; a persona edit shows its diff and force-recreates only that container. G54 — a job posted from the console produces a PR whose scores show in Jobs; `make down` and `member-rm` are refused without the typed confirmation and run with it.
 
 **Out of scope.** Intranet deployment (container image, OIDC, TLS: phase 4), multi-deployment views, editing `docker-compose.yml`, a chat surface (Buzz and Open WebUI), metrics storage beyond the stack's tables, running two actions at once.
 
@@ -68,15 +68,16 @@ Data flows: screens call the same scripts the terminal does (`make stack-status`
 | `scripts/init.sh` | mint the console keypair |
 | `docker-compose.yml` / plan 16 renderer | console pubkey in the agents' allowlist (`humans`) |
 | `scripts/smoke-test.sh` | `test_console` |
+| `console/post-job.sh`, `console/approve-job.sh` | new: post a job as the console identity (private channel, humans as members); reply `approved` to the builder's plan (plan 16.5 checkpoint) |
 | `.gitignore` | `console/audit.log` |
-| `README.md` "Console", `docs/spec.md` §3, §5.17, §7, `AGENTS.md` | docs |
+| `README.md` "Console", `docs/spec.md` §3, §5.19, §7, `AGENTS.md` | docs |
 
 ## 3. Dependencies and verified facts (reference host, 2026-09-14)
 
 - **Host Python.** `python3 --version` → 3.12.3; `import http.server, tomllib, json, subprocess, html, urllib.parse, threading, secrets, hmac, difflib, string` all succeed.
 - **Streaming from the standard library works.** A scratch `http.server.ThreadingHTTPServer` on `127.0.0.1:3004` spawned `bash -c 'for i in 1 2 3; do echo line $i; sleep 0.3; done'` and wrote each line as a chunk (`Transfer-Encoding: chunked`, hand-framed `len\r\n…\r\n`, `0\r\n\r\n` at the end) both as `text/plain` and as `text/event-stream` (`data: line 1\n\n`, final `event: done\ndata: 0\n\n`); `curl -N` printed the lines as they arrived (0.9 s total for three lines 0.3 s apart), then the server was stopped and `ss -ltn` shows nothing on 3004. `BaseHTTPRequestHandler` does not check `Host`: a request with `Host: evil.example` got 200 from the scratch server, which is why the console checks it itself.
 - **Port 3004 is free** (`ss -ltn | grep -c ':3004 '` → 0). `scripts/check-ports.sh` lists only the ports of Compose profiles and treats a port as "ours" when a container of the project publishes it; the console is a host process, so adding 3004 there would report it BUSY whenever the console runs. Decision: the console checks its own port at start and prints the holder (`ss -Htlnp`) on `EADDRINUSE`; `check-ports.sh` is unchanged.
-- **Buzz CLI for job threads**, from `scripts/team-smoke.sh:11–20`: `bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$TEAM_SMOKE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$URL" --entrypoint buzz "$SPRIG" "$@"; }`, `bz users set-profile --name Richard-smoke`, `bz channels create --name "job-$(date +%s)" --type stream --visibility open --ttl 7200 | jq -r .channel_id`, `bz channels add-member --channel "$ch" --pubkey "$TEAM_DINESH_PUBKEY" --role bot` (builder, reviewer and the judge: delivery is members-only), `bz messages send --channel "$ch" --mention "$TEAM_DINESH_PUBKEY" --content "@Dinesh …"`, `bz messages get --channel "$ch" --limit 20`, `bz messages thread --channel "$ch" --event "$root"`. The smoke identity is minted by `scripts/init.sh:37–41` (`for who in DINESH GILFOYLE JARED ERLICH MONICA SMOKE` → `TEAM_${who}_PRIVATE_KEY/PUBKEY` from `buzz-admin generate-key`, `Secret key:` / `Public key:` lines). The console identity follows the `BUZZ_AGENT_*` block shape (`init.sh:31–34`): `CONSOLE_PRIVATE_KEY` / `CONSOLE_PUBKEY`. Agents obey only pubkeys in their allowlist (`BUZZ_ACP_RESPOND_TO_ALLOWLIST`, spec §5.8): the console pubkey must be in `humans` of `team.toml` (plan 16) so the renderer puts it there; **verify at execution** that a mention from the console identity gets a reply (G49).
+- **Buzz CLI for job threads**, from `scripts/team-smoke.sh:11–20`: `bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$TEAM_SMOKE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$URL" --entrypoint buzz "$SPRIG" "$@"; }`, `bz users set-profile --name Richard-smoke`, `bz channels create --name "job-$(date +%s)" --type stream --visibility open --ttl 7200 | jq -r .channel_id`, `bz channels add-member --channel "$ch" --pubkey "$TEAM_DINESH_PUBKEY" --role bot` (builder, reviewer and the judge: delivery is members-only), `bz messages send --channel "$ch" --mention "$TEAM_DINESH_PUBKEY" --content "@Dinesh …"`, `bz messages get --channel "$ch" --limit 20`, `bz messages thread --channel "$ch" --event "$root"`. The smoke identity is minted by `scripts/init.sh:37–41` (`for who in DINESH GILFOYLE JARED ERLICH MONICA SMOKE` → `TEAM_${who}_PRIVATE_KEY/PUBKEY` from `buzz-admin generate-key`, `Secret key:` / `Public key:` lines). The console identity follows the `BUZZ_AGENT_*` block shape (`init.sh:31–34`): `CONSOLE_PRIVATE_KEY` / `CONSOLE_PUBKEY`. Agents obey only pubkeys in their allowlist (`BUZZ_ACP_RESPOND_TO_ALLOWLIST`, spec §5.8): the console pubkey must be in `humans` of `team.toml` (plan 16) so the renderer puts it there; **verify at execution** that a mention from the console identity gets a reply (G54).
 - **`make stack-status` is Task 0 of this plan** (moved from plan 15). Its sources were verified 2026-09-14: `docker compose ps --format json` gives one object per line with `Service`, `State`, `Health`; LiteLLM `GET /health/readiness` → `{"status":"healthy","db":"connected"}` without calling any model (`/health` test-calls every registered model and would load them: never in status); the last meter row per domain is `select distinct on (host, domain) * from stack_energy where ts > now() - interval '2 minutes' order by host, domain, ts desc` (ran on a scratch table; the `json_agg` wrapper: **verify at execution**); Gitea PRs with the judge token (plan 13); `context-report` logic (plan 14) for cap alerts. The Overview is written against this JSON shape: `{generated, bind_host, backend, services[{service,state,health}], gateway{status,db}, power[{host,domain,scope,watts,mem_mib,util,exact,at}] (the last meter row per energy domain within two minutes; empty when the meter is not running; no vendor tool behind it), last_24h{calls,prompt_tokens,completion_tokens,litellm_spend}, energy_24h{scope,measured_kwh,host_kwh,host_kwh_is,cost,tariff_cents,last_sample}|null (plan 15 as revised 2026-09-14: kWh first, the measured figure and the host figure never blended, `host_kwh_is` says `measured` or `estimated`), alerts[{model,over_in,at_out}], open_prs[{repo,number,title,by,labels,url,opened}]}`. If plan 15 changes a field, the console's one mapping function (`status_view`) changes with it.
 - **Mock tokens.** The stamped mock defines the whole palette on bare `:root`, redefines only the tokens under `@media (prefers-color-scheme: dark)` guarded as `:root:not([data-theme="light"])`, and again under `:root[data-theme="dark"]`; components use the tokens only. `console.css` below carries them verbatim.
 - **Log filters.** `scripts/smoke-test.sh:163` reads an agent with `docker compose logs --since 24h --no-log-prefix dinesh | sed 's/\x1b\[[0-9;]*m//g'` (ANSI stripped); the milestone and deliverable lines an agent posts start with `🚩 pushed`, `🚩 CI`, `**PR:**`, `**Review:**`, `**Score:**`, `**Question:**` (plan 11, `agents/TEAM.md`); `scripts/team-narrate.sh` reads `acp::wire` tool-call frames (`$ …` commands) and `acp::stream` narration (`› …`). The Runs screen filter keeps lines matching `turn starting|turn complete|🚩|\*\*(PR|Review|Score|Question):\*\*|acp::tool.*tool_call_update|^\s*\$ ` after stripping ANSI.
@@ -217,6 +218,7 @@ def team_file():
 NAME = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 ROLE = re.compile(r"^(builder|reviewer|coordinator|assistant)$")
 SERVICE = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
+UUID = re.compile(r"^[0-9a-f-]{36}$"); HEX64 = re.compile(r"^[0-9a-f]{64}$")   # a Buzz channel id and an event id (plan 16.5 approve-job)
 def p(params, key, rx=NAME):
     v = params.get(key, "")
     if not rx.match(v): raise ValueError(f"bad {key}: {v!r}")
@@ -248,6 +250,7 @@ ACTIONS = {   # name -> (argv builder, destructive?)
     "recreate": (lambda q: ["docker", "compose", "up", "-d", "--force-recreate", p(q, "S", SERVICE)], False),
     "unload-model": (lambda q: ["bash", "-c", "curl -s localhost:11434/api/generate -d '{\"model\":\"" + p(q, "M") + "\",\"keep_alive\":0}'"], True),
     "post-job": (lambda q: ["./console/post-job.sh", p(q, "T"), q.get("text", "")[:2000]], False),
+    "approve-job": (lambda q: ["./console/approve-job.sh", p(q, "C", UUID), p(q, "R", HEX64), q.get("note", "")[:200]], False),   # plan 16.5 checkpoint: the human says `approved`
 }
 
 # ---------------------------------------------------------------- runner: one job at a time, streamed, audited
@@ -467,8 +470,10 @@ def screen_jobs(env):
     rows.sort(key=lambda x: x[5], reverse=True)
     rc, rep = sh(["make", "-s", "score-report"], timeout=30)
     ask = (f'<form class="mock" data-run="post-job"><input type="hidden" name="T" value="{esc(team or "")}"><label>Ask <textarea id="job-text" name="text" rows="4"></textarea></label>'
-           f'<div><button class="btn primary" type="submit">Post job thread</button> <span class="example">posts as the console identity into a new job channel with the builder, the reviewer and the coordinator as members</span></div></form>')
-    return (f'<h2>Jobs</h2><p class="sub">Ask the team, then see what shipped and how good it was.</p><div class="grid2">{panel("New job", ask)}{panel("Reliability", f"<pre>{esc(rep.strip())}</pre>", btn("score-report", "make score-report") + btn("score-sync", "make score-sync"))}</div>'
+           f'<div><button class="btn primary" type="submit">Post job thread</button> <span class="example">posts as the console identity into a new private job channel with the builder, the reviewer, the coordinator and the humans as members; the builder answers with a plan</span></div></form>'
+           f'<form class="mock" data-run="approve-job"><label>Channel <input name="C" placeholder="job channel uuid (from the post-job output)"></label><label>Thread root <input name="R" placeholder="thread root event id"></label><label>Note <input name="note" placeholder="optional"></label>'
+           f'<div><button class="btn" type="submit">Approve plan</button> <span class="example">replies `approved` as the console identity (plan 16.5); nothing is built before this</span></div></form>')
+    return (f'<h2>Jobs</h2><p class="sub">Ask the team, then see what shipped and how good it was.</p><div class="grid2">{panel("New job and approval", ask)}{panel("Reliability", f"<pre>{esc(rep.strip())}</pre>", btn("score-report", "make score-report") + btn("score-sync", "make score-sync"))}</div>'
             f'{panel("Pull requests", table(["PR", "Title", "By", "Score", "Outcome", "Opened"], rows[:40]))}')
 
 FILTER = re.compile(r"turn starting|turn complete|🚩|\*\*(PR|Review|Score|Question):\*\*|tool_call_update|^\s*\$ ")
@@ -670,7 +675,7 @@ fi
 `scripts/smoke-test.sh`, new section, dispatched when `CONSOLE_PORT` is set and the console answers (the console is a host process, not a profile):
 
 ```bash
-test_console() {   # G45: every screen 200 in < 2 s, foreign Host rejected, POST without the token rejected (plan 17)
+test_console() {   # G50: every screen 200 in < 2 s, foreign Host rejected, POST without the token rejected (plan 17)
   local base="http://${BIND_HOST}:${CONSOLE_PORT:-3004}"
   echo "--- console: screens"
   curl -fsS -m 3 -o /dev/null "$base/overview" 2>/dev/null || { echo "(console not running: make console; skipped)"; return 0; }
@@ -694,24 +699,41 @@ test_console() {   # G45: every screen 200 in < 2 s, foreign Host rejected, POST
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
-team=$1; text=$2; SPRIG=${TEAM_DINESH_IMAGE:-ghcr.io/block/buzz-sprig:sha-e17cdd9}; URL=${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}
+team=$1; text=$2; SPRIG=ghcr.io/block/buzz-sprig:sha-e17cdd9; URL=${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}
 : "${CONSOLE_PRIVATE_KEY:?run make init}"
 bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$CONSOLE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$URL" --entrypoint buzz "$SPRIG" "$@"; }
 member() { python3 -c 'import sys,tomllib; t=tomllib.load(open(sys.argv[1],"rb")); print(next(m["name"] for m in t["members"] if m["role"]==sys.argv[2]))' "teams/$team/team.toml" "$1"; }
 pub() { local v="TEAM_$(echo "$1" | tr a-z A-Z)_PUBKEY"; echo "${!v}"; }
 b=$(member builder); r=$(member reviewer); c=$(member coordinator)
 bz users set-profile --name Console >/dev/null
-ch=$(bz channels create --name "job-$(date +%s)" --type stream --visibility open --ttl 86400 | jq -r .channel_id)
+ch=$(bz channels create --name "job-$(date +%s)" --type stream --visibility private --ttl 86400 | jq -r .channel_id)   # private: the adversary and the gatekeeper stay out (plan 16.5)
 for who in "$b" "$r" "$c"; do bz channels add-member --channel "$ch" --pubkey "$(pub "$who")" --role bot >/dev/null; done
+for h in $(tr ',' ' ' <<<"${TEAM_ALLOWLIST:-}"); do bz channels add-member --channel "$ch" --pubkey "$h" --role member >/dev/null; done   # the humans who may reply `approved`
 bz messages send --channel "$ch" --mention "$(pub "$b")" --content "@${b^} $text" >/dev/null
-echo "posted to channel $ch, mentioning ${b^}; follow it in Buzz or in Runs & logs"
+root=$(bz messages get --channel "$ch" --limit 5 | jq -r --arg b "${b^}" '[.[] | select(.content|startswith("@" + $b + " "))][0].id')
+echo "posted to channel $ch (thread root $root), mentioning ${b^}; the builder answers with **Plan:** and waits for a human `approved` (Buzz app, or console/approve-job.sh $ch $root)"
 ```
 
-Plan 16 fixes the `TEAM_<NAME>_PUBKEY` naming for the default team; if the renderer prefixes with the team name, `pub()` takes `TEAM_${TEAM^^}_${NAME^^}_PUBKEY` instead: **verify at execution** against `.env`.
+`console/approve-job.sh` (the human checkpoint of plan 16.5 from the console identity; the Jobs screen's Approve button runs it):
+
+```bash
+#!/usr/bin/env bash
+# Approve a builder's **Plan:** as the console identity (plan 16.5 checkpoint). Usage: approve-job.sh <channel-uuid> <thread-root-id> [note]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+set -a; . ./.env; set +a
+ch=${1:?channel}; root=${2:?thread root}; note=${3:-}
+SPRIG=ghcr.io/block/buzz-sprig:sha-e17cdd9; URL=${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}
+: "${CONSOLE_PRIVATE_KEY:?run make init}"
+docker run --rm --network host -e BUZZ_PRIVATE_KEY="$CONSOLE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$URL" --entrypoint buzz "$SPRIG" messages send --channel "$ch" --reply-to "$root" --content "approved${note:+: $note}" >/dev/null
+echo "approved in $ch/$root"
+```
+
+Plan 16 (executed) names member keys `TEAM_<NAME>_PUBKEY` with dashes as underscores, whatever the team; `pub()` above is right. Plan 16.5 (executed before this plan) makes the builder wait for a human `approved` reply in the thread and keeps job channels private, hence `--visibility private`, the human members and `approve-job.sh`.
 
 ### Task 6 — docs
 
-- `docs/spec.md`: §3 (`CONSOLE_PORT`, `CONSOLE_*` keys); new §5.17 "The console (plan 17)": the nine principles, the screens table, the security model (Host allowlist, per-process token, Origin/Sec-Fetch-Site, one worker, typed confirmation, masking, audit), the auth hook contract (`actor_of`), the `/health` rule, the action allowlist rule; §7 gates G45–G49.
+- `docs/spec.md`: §3 (`CONSOLE_PORT`, `CONSOLE_*` keys); new §5.19 "The console (plan 17)": the nine principles, the screens table, the security model (Host allowlist, per-process token, Origin/Sec-Fetch-Site, one worker, typed confirmation, masking, audit), the auth hook contract (`actor_of`), the `/health` rule, the action allowlist rule; §7 gates G50–G54.
 - `README.md`: "Console" after "The agent team": `make console`, the URL, what each screen does, the drawer, the audit log, the rule that the console never does anything the terminal cannot, the systemd user unit (mirror of the meter's), and that exposing it beyond loopback waits for a later plan.
 - `AGENTS.md`: status line + one non-negotiable: "The console (`console/app.py`, port 3004, host process) only runs named actions from its allowlist that map to make targets and scripts, shows every command, streams and audits it, diffs before every write, never calls LiteLLM `/health`, and binds loopback with Host/token/Origin checks (spec §5.17). Never add a control path that bypasses the make targets."
 
@@ -720,13 +742,13 @@ Plan 16 fixes the `TEAM_<NAME>_PUBKEY` naming for the default team; if the rende
 - **One process, one operator.** `ThreadingHTTPServer` and a single worker suit one lead at a terminal-less desk. Two people clicking at once queue; the drawer says `queued`. Phase 4 keeps the queue and adds identity.
 - **The token is per process.** Restarting the console invalidates open pages; they reload and get the new token. Cookies are not used, so there is nothing for a foreign page to ride on.
 - **Writes are whole-file replacements** guarded by an HMAC of the exact content shown in the diff; a change between "show diff" and "apply" is refused. The `.env` editor merges only posted keys and never receives masked values.
-- **Screens shell out** to the same scripts the terminal runs (`stack-status`, `team-status`, `context-report`, `score-report`) with small timeouts and a 10 s cache for the status JSON; a slow script shows as a slow screen, which G45 bounds at 2 s and which points at the script, not the console.
+- **Screens shell out** to the same scripts the terminal runs (`stack-status`, `team-status`, `context-report`, `score-report`) with small timeouts and a 10 s cache for the status JSON; a slow script shows as a slow screen, which G50 bounds at 2 s and which points at the script, not the console.
 - **Backend-agnostic by construction:** only `model-fit` is Ollama-gated, by the same `/api/tags` probe plan 14 used.
 - **Intranet (phase 4)** replaces `actor_of`, adds TLS at a reverse proxy, widens the `Host` allowlist to the proxy's name, and containerises with the same `console/` mounted; nothing in the routes changes.
 
 ## 6. Testing strategy
 
-Phase 1 first: start the console, G45 through the smoke section, G46 with `make context-report` from the UI against the terminal (`diff <(make -s context-report) <(sed -n '/^data:/p' …)` using the audit job's captured lines), G47 with a harmless `.env` change (`POWER_HOST_OVERHEAD=100`), its diff, apply, revert, and `make up` from Setup on the running stack. Phase 2 after plan 16: G48 with a member on the fixture team. Phase 3: G49 with a job from the Jobs screen and the two destructive refusals. Numbers and outputs into §8.
+Phase 1 first: start the console, G50 through the smoke section, G51 with `make context-report` from the UI against the terminal (`diff <(make -s context-report) <(sed -n '/^data:/p' …)` using the audit job's captured lines), G52 with a harmless `.env` change (`POWER_HOST_OVERHEAD=100`), its diff, apply, revert, and `make up` from Setup on the running stack. Phase 2 after plan 16: G53 with a member on the fixture team. Phase 3: G54 with a job from the Jobs screen and the two destructive refusals. Numbers and outputs into §8.
 
 ## 7. Validation commands
 
@@ -736,24 +758,27 @@ P0=$(nvidia-smi --query-gpu=power.draw.average --format=csv,noheader,nounits); t
 grep -c nvidia-smi scripts/stack-status.sh   # 0
 curl -s localhost:11434/api/ps | jq '.models|length'; nvidia-smi --query-gpu=power.draw.average --format=csv,noheader,nounits   # unchanged: nothing loaded by status
 make console &                              # prints: console on http://127.0.0.1:3004
-# G45
+# G50
 ss -ltnp | grep ':3004 '                    # 127.0.0.1:3004 only
 make test 2>&1 | sed -n '/--- console/,/POST without token/p'
-# G46: run from the UI (Models -> make context-report), then:
+# G51: run from the UI (Models -> make context-report), then:
 tail -1 console/audit.log | jq .            # action context-report, exit 0, seconds
 # capture the streamed lines the same way the browser did, and compare with the terminal
 TOKEN=$(curl -s http://127.0.0.1:3004/overview | grep -o 'console-token" content="[^"]*' | cut -d'"' -f3)
 JOB=$(curl -s -X POST -H "X-Console-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"action":"context-report"}' http://127.0.0.1:3004/api/run | jq -r .job)
 curl -sN http://127.0.0.1:3004/api/jobs/$JOB/stream | sed -n 's/^data: //p' | jq -r . | grep -v '^{' > /tmp/ui.txt; make -s context-report > /tmp/term.txt; diff /tmp/ui.txt /tmp/term.txt && echo "byte for byte"
-# G47: Setup -> change POWER_HOST_OVERHEAD -> Show diff -> Apply; then
+# G52: Setup -> change POWER_HOST_OVERHEAD -> Show diff -> Apply (UI), or the same through the API the button calls:
+D=$(curl -s -X POST -H "X-Console-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"kind":"env","form":{"POWER_HOST_OVERHEAD":"41"}}' http://127.0.0.1:3004/api/diff); jq -r '.diff' <<<"$D" | head -5
+curl -s -X POST -H "X-Console-Token: $TOKEN" -H 'Content-Type: application/json' -d "$(jq -c '{kind:"env",content:.content,sig:.sig}' <<<"$D")" http://127.0.0.1:3004/api/apply | jq -c .   # {"written":".env",...}
+# then
 grep '^POWER_HOST_OVERHEAD=' .env; tail -1 console/audit.log            # write .env
 # Setup -> make up: stream ends with exit 0; docker compose ps shows healthy
-# G48 (after plan 16): Teams -> Add member bertram/builder; then in Buzz mention @Bertram in a job thread; a reply within 3 min
+# G53 (after plan 16): Teams -> Add member bertram/builder; then in Buzz mention @Bertram in a job thread; a reply within 3 min
 # Teams -> persona -> edit -> Show diff -> Apply: audit shows write teams/<team>/personas/bertram.md then docker compose up -d --force-recreate bertram
-# G49: Jobs -> Post job thread; a PR by the builder with complexity/ and confidence/ labels appears in Jobs within 5 min
+# G54: Jobs -> Post job thread (or console/post-job.sh piedpiper "<ask>"); the builder posts **Plan:**; console/approve-job.sh <channel> <root>; a PR by the builder appears in Jobs within 10 min and, once the pipeline of plan 16.5 has run, its complexity/ and confidence/ labels
 curl -s -X POST -H "X-Console-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"action":"down"}' http://127.0.0.1:3004/api/run -w '\n%{http_code}\n'    # 409 type down to confirm
 ```
 
 ## 8. Execution report
 
-(to be written at execution: the smoke's console section, the audit lines for G46–G49, the diff shown for G47, the member and the job for G48–G49, any deviation with its reason)
+(to be written at execution: the smoke's console section, the audit lines for G51–G54, the diff shown for G52, the member and the job for G53–G54, any deviation with its reason)

@@ -193,7 +193,7 @@ make context-report               # per model, last 7 days: p50/p95/max prompt, 
 # host Ollama on the reference host (outside this repo); the bundled profile reads the same names from .env
 docker run -d --name ollama --restart unless-stopped --gpus all -p 0.0.0.0:11434:11434 -v ollama:/root/.ollama \
   -e OLLAMA_HOST=0.0.0.0:11434 -e OLLAMA_NUM_PARALLEL=3 -e OLLAMA_MAX_LOADED_MODELS=2 \
-  -e OLLAMA_FLASH_ATTENTION=1 -e OLLAMA_KV_CACHE_TYPE=q8_0 -e OLLAMA_KEEP_ALIVE=5m ollama/ollama:0.33.3
+  -e OLLAMA_FLASH_ATTENTION=1 -e OLLAMA_KV_CACHE_TYPE=q8_0 -e OLLAMA_KEEP_ALIVE=5m ollama/ollama:0.34.0
 make model-fit M=ornith-max       # loads the model at candidate windows (largest first, capped by MAX_WINDOW=131072), keeps the largest fully on the GPU within budget, prints the registry block
 ```
 
@@ -207,7 +207,7 @@ Ollama runs the model at `num_ctx × OLLAMA_NUM_PARALLEL` and, with the variable
 
 **Idle.** Jared's heartbeat is off by default (`TEAM_HEARTBEAT_SECONDS=0`): one tick is up to 12 shell commands, each a full-prefill LLM call, every interval, and each call refreshes `keep_alive`. Set it to `7200` when you want proactive triage, then `docker compose up -d jared`.
 
-**Power cap** (opt-in, host setting, lost at reboot). Bursts reach 570 W in prefill; the card's floor is 400 W:
+**Power cap** (opt-in, host setting, lost at reboot). Bursts reach 570 W in prefill; the card's floor is 400 W. Measured: decode on `ornith-max` is 253.6 tok/s at 450 W and 250.3 tok/s at 600 W, so the cap is free on decode:
 
 ```bash
 sudo nvidia-smi -pl 450          # bursts capped at 450 W (this card: min 400, max 600); lost at reboot
