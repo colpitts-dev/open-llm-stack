@@ -462,6 +462,8 @@ make console                     # http://127.0.0.1:3004  (host process: it must
 # systemctl --user enable --now stack-console
 ```
 
+- **The approval watcher (plan 19).** Buzz Desktop's `@mention` picker does not recognize the team's server agents, so typing `@Gilfoyle approved` in a job thread often fails to resolve — and a plain `approved` with no mention never reaches the builder at all (it only subscribes to events that mention it). `make approval-watch` runs a small foreground poller (`console/approve-watch.sh`, Ctrl-C to stop) that watches open job threads for a bare, case-insensitive `approved` or `#approved` reply from an allowlisted human and approves the job the same way the console's own Approve button does. It changes nothing about any agent's configuration and spends no LLM turns.
+
 Loopback only, today with no login (any process on your machine that can reach 127.0.0.1:3004 can drive it). Exposing it beyond loopback — Gitea OIDC behind TLS at a reverse proxy — waits for a later plan.
 
 ## Security notes
