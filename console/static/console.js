@@ -20,6 +20,7 @@
   }
   document.querySelectorAll('button[data-action]').forEach((b) => b.addEventListener('click', () => run(b.dataset.action, JSON.parse(b.dataset.params || '{}'), !!b.dataset.destructive)));
   document.querySelectorAll('form[data-run]').forEach((f) => f.addEventListener('submit', (e) => { e.preventDefault();
+    const nm = f.querySelector('#m-name'); if (nm) nm.value = nm.value.toLowerCase();
     const params = Object.fromEntries(new FormData(f).entries()); run(f.dataset.run, params, false); }));
   document.querySelectorAll('form[data-write]').forEach((f) => f.addEventListener('submit', async (e) => { e.preventDefault();
     const kind = f.dataset.write, name = f.dataset.name || undefined; let body;
