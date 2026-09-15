@@ -1,6 +1,6 @@
 # Plan 18 — Claude Code as a team runtime: local models through the gateway, hosted models from an opt-in include
 
-**Spec:** `docs/spec.md` (this plan adds §5.18 and gates G50–G54). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
+**Spec:** `docs/spec.md` (this plan adds §5.19 and gates G50–G54). **Rules:** `AGENTS.md` (the registry stays open weights and local; hosted entries, closed or open weights, live only in the opt-in include file this plan adds). **Knowledge:** plan 12 §5.13 (runtime switch, goose image, the measured comparison), plan 14 §5.15 (context contract), plan 15 (per-client virtual keys, cost ledger), plan 16 (`teams/<team>/team.toml`, `runtime` and `model` per member, the renderer's `IMAGES` map).
 **Sequence:** 18. Requires plans 15 and 16 executed (17 is independent). Adds one image (`agents/claude/Dockerfile`, the second opt-in build after goose), one probe, one include file for the registry with a switch script, one entrypoint branch, four make targets, `.env` lines, docs. No new service, port or network.
 **Execute with:** `/execute plans/18-claude-runtime.md`
 **Network:** `docker pull` and the two pinned `npm install`s inside the image build; hosted models need egress to their provider. Everything else below was verified on the reference host on 2026-09-14 (Node 22.22 on the host for the scratch runs; the image pins Node 22).
@@ -54,7 +54,7 @@
 | `docker-compose.yml` | `litellm` mounts `./proxy/frontier.yaml:/app/frontier.yaml:ro` |
 | `Makefile` | `claude-image`, `member-claude`, `frontier-on`, `frontier-off` |
 | `.env.example`, `.gitignore` | `ANTHROPIC_API_KEY=`, `FIREWORKS_AI_API_KEY=`; `proxy/frontier.yaml` ignored |
-| `docs/spec.md` §1 (image row), §3, §5.18, §7; `README.md`; `AGENTS.md` | docs, gates, status |
+| `docs/spec.md` §1 (image row), §3, §5.19, §7; `README.md`; `AGENTS.md` | docs, gates, status |
 
 ## 3. Dependencies and verified facts (reference host, 2026-09-14)
 
@@ -310,9 +310,9 @@ In `scripts/team-entrypoint.sh`, next to `goose)`:
 
 ### Task 6 — docs
 
-- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.18 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G50–G54.
+- `docs/spec.md`: §1 image row (`open-llm-stack/claude-agent:2.1.270` from `node:22-bookworm-slim@sha256:4d67…`, both npm packages pinned, verified 2026-09-14); §3 `ANTHROPIC_API_KEY`, `FIREWORKS_AI_API_KEY`; new §5.19 "Claude Code runtime and hosted models (plan 18)": the two modes, the subscription decision with the terms quoted, the include and the switch, the smoke rule, the measured numbers; §5.13 runtime matrix row updated from "design only"; §7 gates G50–G54.
 - `README.md`: "Claude Code as a runtime" after the runtimes paragraph: what "runs Claude Code" means here (plain text, per Anthropic's branding rule), mode A ("unsupported by Anthropic, documented by LiteLLM"), mode B with `make frontier-on`, the provider keys, the egress warning, adding a provider block (copy a block, name the key variable in its marker line), and one sentence: subscription login is not offered by the stack, with the terms reference and the reason.
-- `AGENTS.md`: replace the closed-weight-runtimes line with: "Claude Code is an opt-in runtime per member (`runtime = "claude"`, plan 18): local models through LiteLLM, or hosted models only from `proxy/frontier.yaml` (`make frontier-on`, provider keys in `.env`). `proxy/config.yaml` stays open weights and local; the smoke enforces it. No subscription credentials, ever (spec §5.18)."
+- `AGENTS.md`: replace the closed-weight-runtimes line with: "Claude Code is an opt-in runtime per member (`runtime = "claude"`, plan 18): local models through LiteLLM, or hosted models only from `proxy/frontier.yaml` (`make frontier-on`, provider keys in `.env`). `proxy/config.yaml` stays open weights and local; the smoke enforces it. No subscription credentials, ever (spec §5.19)."
 
 ## 5. Considerations
 

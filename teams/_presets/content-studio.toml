@@ -1,0 +1,27 @@
+# Preset content-studio (plan 16): a writer, an editor, a designer and a coordinator. Roles stay the closed list (builder, reviewer, coordinator); titles are how the roster introduces them.
+# `make team-new T=<name> FROM=content-studio` copies it, rewrites name and org, and stubs a persona per member. Edit, then `make team-render`.
+name = "TEAM"               # rewritten by make team-new T=<name>
+org = "TEAM"                # rewritten by make team-new: the Gitea organisation the team works in
+model = "ornith-max"        # every member's model unless a member sets its own; a model_name in proxy/config.yaml
+# ci_label = "python"       # optional: forces TEAM_CI_LABEL in .env (python = bundled runner, ci = the forge's); unset = .env keeps its own value
+humans = []                 # pubkeys of the people the agents obey, owner first; blank here = TEAM_ALLOWLIST in .env
+
+[[members]]
+name = "ada"
+role = "builder"
+title = "writer"
+
+[[members]]
+name = "edsger"
+role = "reviewer"
+title = "editor"
+
+[[members]]
+name = "barbara"
+role = "builder"
+title = "designer"
+
+[[members]]
+name = "grace"
+role = "coordinator"
+heartbeat = 0               # seconds between proactive triage ticks; 0 = off

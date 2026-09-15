@@ -2,6 +2,10 @@
 # selects what runs. No depends_on ever crosses a profile boundary (spec §4.3).
 name: open-llm-stack
 
+include:
+  - path: teams/${TEAM_NAME:-piedpiper}/compose.yml   # the team (plan 16): rendered from teams/<team>/team.toml by make team-render
+    project_directory: .
+
 networks:
   default:
     name: open-llm-stack
@@ -16,62 +20,6 @@ volumes:
   gitea-data:
   ollama-data:
   gitea-runner-data:
-  team-dinesh:
-  team-gilfoyle:
-  team-jared:
-  team-erlich:
-  team-monica:
-
-x-team-agent: &team-agent
-  image: ghcr.io/block/buzz-sprig:sha-e17cdd9
-  profiles: [team]
-  restart: unless-stopped
-  network_mode: host                 # relay + LiteLLM + Gitea via their public loopback URLs (spec §4.6)
-  entrypoint: ["/bin/bash", "/opt/team/team-entrypoint.sh"]
-  volumes:
-    - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-    - ./agents:/opt/team/agents:ro
-    - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-  environment: &team-env
-    BUZZ_RELAY_URL: ${BUZZ_RELAY_URL:-ws://127.0.0.1:3002}
-    BUZZ_ACP_AGENT_COMMAND: buzz-agent
-    BUZZ_ACP_AGENT_ARGS: ""
-    BUZZ_ACP_MCP_COMMAND: buzz-dev-mcp
-    BUZZ_ACP_AGENTS: "1"
-    BUZZ_ACP_RESPOND_TO: allowlist
-    # No :? here: Compose interpolates every service even when its profile is off, so a required var that
-    # make team-bootstrap fills later would break `docker compose` before bootstrap can run (verified 2026-09-13).
-    # The entrypoint checks these at start instead.
-    # Humans from TEAM_ALLOWLIST, the smoke identity, and the four teammates: Dinesh asks Gilfoyle for review,
-    # Jared briefs Dinesh, Erlich delegates -- without the team pubkeys here those mentions are silently dropped (verified).
-    BUZZ_ACP_RESPOND_TO_ALLOWLIST: ${TEAM_ALLOWLIST:-},${TEAM_SMOKE_PUBKEY:-},${TEAM_DINESH_PUBKEY:-},${TEAM_GILFOYLE_PUBKEY:-},${TEAM_JARED_PUBKEY:-},${TEAM_ERLICH_PUBKEY:-},${TEAM_MONICA_PUBKEY:-}
-    BUZZ_ACP_SYSTEM_PROMPT_FILE: /home/agent/.prompt.md   # assembled by the entrypoint from agents/TEAM.md + persona
-    BUZZ_AGENT_PROVIDER: openai
-    OPENAI_COMPAT_BASE_URL: ${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1
-    OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY}
-    OPENAI_COMPAT_MODEL: ${TEAM_MODEL:-ornith-max}
-    OPENAI_COMPAT_API: chat
-    BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${TEAM_MAX_CONTEXT_TOKENS:-}   # blank = entrypoint fills from the registry
-    BUZZ_AGENT_REQUIRE_REPLY: "1"      # reply guard: rerolls a turn that ends without a publish (advisory, max 2)
-    GITEA_URL: ${GITEA_PUBLIC_URL:-http://127.0.0.1:3003}
-    GITEA_OWNER: ${TEAM_GITEA_ORG:-piedpiper}   # org, not the admin user: a non-admin cannot create repos in another user's namespace
-    GITEA_ADMIN: ${GITEA_ADMIN_USER:-stackadmin}    # with GITEA_HUMAN, the only users who may merge (branch-protection merge whitelist)
-    GITEA_HUMAN: ${TEAM_HUMAN_USER:-richard}
-    GILFOYLE_PUBKEY: ${TEAM_GILFOYLE_PUBKEY:-}   # inlined into the prompt: builders mention the reviewer without hunting the members list (plan 11)
-    JARED_PUBKEY: ${TEAM_JARED_PUBKEY:-}       # inlined into the prompt: Gilfoyle asks the judge for a score (plan 13)
-    TEAM_CI_LABEL: ${TEAM_CI_LABEL:-python}   # runs-on label for generated CI workflows (python = bundled runner; ci = the forge's)
-    RUST_LOG: info
-    TEAM_RUNTIME: buzz-agent           # plan 12: dinesh overrides this from TEAM_DINESH_RUNTIME
-    TEAM_NARRATE: ${TEAM_NARRATE:-off}   # off | tools | both: progress mirror into the job thread (plan 11; the entrypoint raises RUST_LOG when on)
-  healthcheck:
-    test: ["CMD-SHELL", "pgrep -f buzz-acp >/dev/null"]
-    interval: 15s
-    timeout: 5s
-    retries: 3
-    start_period: 150s
-  logging:                            # acp::wire debug (mirror on) is ~10x the info volume; bound it
-    driver: json-file
-    options: { max-size: "20m", max-file: "3" }
 
 services:
   # ---------------------------------------------------------------- profile: litellm (port 3000)
@@ -128,7 +76,7 @@ services:
       ENABLE_PERSISTENT_CONFIG: "false"           # env wins on every boot; otherwise first-boot values freeze in the DB
       ENABLE_OPENAI_API: "true"
       OPENAI_API_BASE_URL: ${LITELLM_URL:-http://litellm:4000}/v1
-      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+      OPENAI_API_KEY: ${OPENWEBUI_LITELLM_KEY:-${LITELLM_MASTER_KEY}}   # own virtual key when minted (make litellm-keys), else the master key
       ENABLE_OLLAMA_API: "false"                  # default true would bypass the gateway
     volumes:
       - open-webui-data:/app/backend/data
@@ -344,7 +292,7 @@ services:
       # LLM through LiteLLM (OpenAI-compatible, Chat Completions)
       BUZZ_AGENT_PROVIDER: openai
       OPENAI_COMPAT_BASE_URL: ${LITELLM_PUBLIC_URL:-http://127.0.0.1:3000}/v1
-      OPENAI_COMPAT_API_KEY: ${LITELLM_MASTER_KEY:?run make init}
+      OPENAI_COMPAT_API_KEY: ${BUZZ_AGENT_LITELLM_KEY:-${LITELLM_MASTER_KEY:?run make init}}
       OPENAI_COMPAT_MODEL: ${BUZZ_AGENT_MODEL:-ornith-max}
       OPENAI_COMPAT_API: chat
       BUZZ_AGENT_MAX_CONTEXT_TOKENS: ${BUZZ_AGENT_MAX_CONTEXT_TOKENS:-65536}    # = that model's max_input_tokens in proxy/config.yaml (plan 14)
@@ -381,90 +329,4 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------- profile: team
-  dinesh:
-    <<: *team-agent
-    image: ${TEAM_DINESH_IMAGE:-ghcr.io/block/buzz-sprig:sha-e17cdd9}   # plan 12: open-llm-stack/goose-agent:1.50.0 when TEAM_DINESH_RUNTIME=goose (make dinesh-runtime)
-    volumes:
-      - team-dinesh:/home/agent
-      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
-      - ./agents:/opt/team/agents:ro
-      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-    environment:
-      <<: *team-env
-      TEAM_ROLE: dinesh
-      TEAM_RUNTIME: ${TEAM_DINESH_RUNTIME:-buzz-agent}
-      BUZZ_ACP_DISPLAY_NAME: Dinesh
-      BUZZ_PRIVATE_KEY: ${TEAM_DINESH_PRIVATE_KEY:?run make init}
-      BUZZ_ACP_SESSION_POLICY: thread
-      GITEA_USER: dinesh
-      GITEA_TOKEN: ${TEAM_DINESH_GITEA_TOKEN:-}
-
-  gilfoyle:
-    <<: *team-agent
-    volumes:
-      - team-gilfoyle:/home/agent
-      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
-      - ./agents:/opt/team/agents:ro
-      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-    environment:
-      <<: *team-env
-      TEAM_ROLE: gilfoyle
-      BUZZ_ACP_DISPLAY_NAME: Gilfoyle
-      BUZZ_PRIVATE_KEY: ${TEAM_GILFOYLE_PRIVATE_KEY:?run make init}
-      BUZZ_ACP_SESSION_POLICY: thread
-      GITEA_USER: gilfoyle
-      GITEA_TOKEN: ${TEAM_GILFOYLE_GITEA_TOKEN:-}
-
-  jared:
-    <<: *team-agent
-    volumes:
-      - team-jared:/home/agent
-      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
-      - ./agents:/opt/team/agents:ro
-      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-    environment:
-      <<: *team-env
-      TEAM_ROLE: jared
-      BUZZ_ACP_DISPLAY_NAME: Jared
-      BUZZ_PRIVATE_KEY: ${TEAM_JARED_PRIVATE_KEY:?run make init}
-      BUZZ_ACP_SESSION_POLICY: channel
-      BUZZ_ACP_HEARTBEAT_INTERVAL: ${TEAM_HEARTBEAT_SECONDS:-0}      # off by default since plan 14: a tick is ~13 full-prefill LLM calls and keeps the model resident
-      BUZZ_ACP_HEARTBEAT_PROMPT_FILE: /opt/team/agents/jared-heartbeat.md
-      GITEA_USER: jared
-      GITEA_TOKEN: ${TEAM_JARED_GITEA_TOKEN:-}
-
-  erlich:
-    <<: *team-agent
-    volumes:
-      - team-erlich:/home/agent
-      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
-      - ./agents:/opt/team/agents:ro
-      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-    environment:
-      <<: *team-env
-      TEAM_ROLE: erlich
-      BUZZ_ACP_DISPLAY_NAME: Erlich
-      BUZZ_PRIVATE_KEY: ${TEAM_ERLICH_PRIVATE_KEY:?run make init}
-      BUZZ_ACP_SESSION_POLICY: channel
-
-  monica:
-    <<: *team-agent
-    volumes:
-      - team-monica:/home/agent
-      - ./scripts/team-entrypoint.sh:/opt/team/team-entrypoint.sh:ro
-      - ./scripts/team-narrate.sh:/opt/team/team-narrate.sh:ro
-      - ./agents:/opt/team/agents:ro
-      - ${GITEA_CA_FILE:-/dev/null}:/opt/team/ca.crt:ro   # /dev/null = no private CA (0 bytes; the entrypoint checks -s)
-    environment:
-      <<: *team-env
-      TEAM_ROLE: monica
-      BUZZ_ACP_DISPLAY_NAME: Monica
-      BUZZ_PRIVATE_KEY: ${TEAM_MONICA_PRIVATE_KEY:?run make init}
-      BUZZ_ACP_SESSION_POLICY: thread
-      GITEA_USER: monica
-      GITEA_TOKEN: ${TEAM_MONICA_GITEA_TOKEN:-}
-
+  # (services rendered into teams/<team>/compose.yml, plan 16)

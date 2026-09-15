@@ -34,13 +34,13 @@ if blank BUZZ_AGENT_PRIVATE_KEY; then
   set_if_blank BUZZ_AGENT_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
 fi
 
-for who in DINESH GILFOYLE JARED ERLICH MONICA SMOKE; do
-  if blank "TEAM_${who}_PRIVATE_KEY"; then
-    out=$(gen_key)
-    set_if_blank "TEAM_${who}_PRIVATE_KEY" "$(awk '/Secret key:/{print $3}' <<<"$out")"
-    set_if_blank "TEAM_${who}_PUBKEY" "$(awk '/Public key:/{print $3}' <<<"$out")"
-  fi
-done
+if blank TEAM_SMOKE_PRIVATE_KEY; then   # the smoke's throwaway human identity; member keys come from the renderer below
+  out=$(gen_key)
+  set_if_blank TEAM_SMOKE_PRIVATE_KEY "$(awk '/Secret key:/{print $3}' <<<"$out")"
+  set_if_blank TEAM_SMOKE_PUBKEY "$(awk '/Public key:/{print $3}' <<<"$out")"
+fi
+# Team members are data (plan 16): teams/<TEAM_NAME>/team.toml -> teams/<TEAM_NAME>/compose.yml, minting each member's keypair when blank.
+python3 scripts/team-render.py
 set_if_blank TEAM_GITEA_PASSWORD "$(hex 12)"
 set_if_blank TEAM_HUMAN_PASSWORD "$(hex 12)"
 

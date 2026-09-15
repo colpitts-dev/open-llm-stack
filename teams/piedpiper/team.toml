@@ -1,0 +1,28 @@
+# The default team (plan 16). Edit, then `make team-render`. Member order is the roster order and the allowlist order.
+name = "piedpiper"          # the team: directory name, TEAM_NAME in .env
+org = "piedpiper"           # the Gitea organisation the team works in (TEAM_GITEA_ORG): created if missing, reused if present
+model = "ornith-max"        # every member's model unless a member sets its own; a model_name in proxy/config.yaml
+# ci_label = "python"       # optional: forces TEAM_CI_LABEL in .env (python = bundled runner, ci = the forge's); unset = .env keeps its own value
+humans = []                 # pubkeys of the people the agents obey, owner first; blank here = TEAM_ALLOWLIST in .env
+
+[[members]]
+name = "dinesh"             # login, service, volume team-dinesh, keys TEAM_DINESH_*; display "Dinesh"
+role = "builder"
+
+[[members]]
+name = "gilfoyle"
+role = "reviewer"
+
+[[members]]
+name = "jared"
+role = "coordinator"
+heartbeat = 0               # seconds between proactive triage ticks; 0 = off (plan 14: a tick is ~13 full-prefill calls)
+
+[[members]]
+name = "erlich"
+role = "assistant"
+
+[[members]]
+name = "monica"
+role = "builder"
+title = "UI designer, also a builder"   # how the roster introduces her; the persona carries the rest
