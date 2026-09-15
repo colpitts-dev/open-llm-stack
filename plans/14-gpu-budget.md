@@ -545,3 +545,15 @@ budget line: GPU 32607 MiB, other 1239-1243 MiB (display), headroom 2048 -> 2931
 - The contract holds end to end on this backend: every declared window is honoured (probe), the smokes ran with no truncation and no prompt near the cap (`max_in 18656` of 65536), the model unloads five minutes after the last call and the heartbeat no longer keeps it warm.
 - Prefill did not drop because there is still one slot: three agents alternate on it and each turn evicts the others' checkpoints (`f_sim_best < 0.9` on 57 of 74 prompts). Per-agent prompt caches need a backend that gives this architecture more than one sequence (llama.cpp per model with `-np`, or vLLM) — the next plan's first question when a job's prefill time matters more than idle unload.
 - `over_in` and `at_out` are the numbers to watch under real work; both were 0 for the gated smokes. The historical rows (`over_in 454` on ornith-max) are prompts from before this plan measured against the new cap: the compaction that buzz-agent does at its estimate of 65536 will now fire far earlier than the 131072 window.
+
+### Addendum 2026-09-14 (late): host Ollama upgraded to 0.34.0, G31 rechecked
+
+`docker rm -f ollama` and the same `docker run` line with `ollama/ollama:0.34.0` (image pulled earlier; models kept in the `ollama` volume). Loaded `ornith-max` and `qwen3.8-max` once each:
+
+```
+{"version":"0.34.0"}
+time=2026-09-15T00:54:57.041Z level=WARN source=sched.go:509 msg="model architecture does not currently support parallel requests" architecture=qwen35moe
+time=2026-09-15T00:56:22.124Z level=WARN source=sched.go:509 msg="model architecture does not currently support parallel requests" architecture=qwen35
+```
+
+Same limitation as 0.33.3 for both architectures, so G31 stays not reachable on Ollama; release notes 0.33.0–0.34.1-rc1 do not mention parallel support for qwen3.5. `make context-probe` after the upgrade: every registered window holds (ornith-max, laguna-max, qwen3.8-max at 50%, 100%, max_input + max_output − 128). Stack healthy. Next levers unchanged: a later Ollama release, llama.cpp `-np 3` with a GGUF, or a dense architecture that supports slots.

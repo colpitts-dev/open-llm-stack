@@ -193,7 +193,7 @@ make context-report               # per model, last 7 days: p50/p95/max prompt, 
 # host Ollama on the reference host (outside this repo); the bundled profile reads the same names from .env
 docker run -d --name ollama --restart unless-stopped --gpus all -p 0.0.0.0:11434:11434 -v ollama:/root/.ollama \
   -e OLLAMA_HOST=0.0.0.0:11434 -e OLLAMA_NUM_PARALLEL=3 -e OLLAMA_MAX_LOADED_MODELS=2 \
-  -e OLLAMA_FLASH_ATTENTION=1 -e OLLAMA_KV_CACHE_TYPE=q8_0 -e OLLAMA_KEEP_ALIVE=5m ollama/ollama:0.33.3
+  -e OLLAMA_FLASH_ATTENTION=1 -e OLLAMA_KV_CACHE_TYPE=q8_0 -e OLLAMA_KEEP_ALIVE=5m ollama/ollama:0.34.0
 make model-fit M=ornith-max       # loads the model at candidate windows (largest first, capped by MAX_WINDOW=131072), keeps the largest fully on the GPU within budget, prints the registry block
 ```
 
