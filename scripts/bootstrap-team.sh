@@ -23,23 +23,34 @@ case "$(code -H "$A" "$B/admin/users?limit=1")" in
   *) echo "cannot reach $B (is GITEA_PUBLIC_URL right? does this host trust its CA?)" >&2; exit 1 ;;
 esac
 
-# 1. users: three agents + you. Created with the admin token; tokens minted by each agent with ITS OWN password (no admin needed).
+# 1. users: the team members + you. Created with the admin token; tokens minted by each agent with ITS OWN password (no admin needed).
 ensure_user() {   # ensure_user <name> <password>. Email: the API validates syntax (user@localhost is rejected with 422 "[Email]: Email");
                   # .invalid is reserved for exactly this (RFC 2606) and no mail is ever sent (send_notify false).
   if [ "$(code -H "$A" "$B/users/$1")" = 200 ]; then echo "gitea user $1 exists"
   else api -d "{\"username\":\"$1\",\"email\":\"$1@agents.invalid\",\"password\":\"$2\",\"must_change_password\":false,\"send_notify\":false}" "$B/admin/users" >/dev/null && echo "created gitea user $1"; fi
 }
 SCOPES='["write:repository","write:issue","read:user","write:organization"]'
-for who in dinesh gilfoyle jared monica; do
-  ensure_user "$who" "$TEAM_GITEA_PASSWORD"
-  var="TEAM_$(echo "$who" | tr a-z A-Z)_GITEA_TOKEN"
-  if blank "$var" || ! has_org_scope "${!var}"; then
-    tok=$(curl -fsS -u "$who:$TEAM_GITEA_PASSWORD" -H 'Content-Type: application/json' -d "{\"name\":\"team-$(date +%s%N)-$$\",\"scopes\":$SCOPES}" "$B/users/$who/tokens" | jq -r .sha1)
-    [ ${#tok} -ge 20 ] || { echo "token minting for $who failed (wrong TEAM_GITEA_PASSWORD? mint one in the Gitea UI and paste it as $var)" >&2; exit 1; }
+# Members from the team file (plan 16): login = name + AGENT_LOGIN_SUFFIX; forge accounts for every role but assistant.
+ROSTER=$(python3 scripts/team-roster.py members)
+is_agent() {   # is_agent <login>: an existing user is ours when its stored email is <login>@agents.invalid (admin listing shows stored emails)
+  api "$B/admin/users?limit=200" | jq -e --arg u "$1" '.[] | select(.login==$u) | select(.email|endswith("@agents.invalid"))' >/dev/null; }
+while read -r name role display login prefix; do
+  [ "$role" = assistant ] && continue
+  if [ "$(code -H "$A" "$B/users/$login")" = 200 ] && ! is_agent "$login"; then
+    echo "login '$login' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun." >&2; exit 1
+  fi
+  ensure_user "$login" "$TEAM_GITEA_PASSWORD"
+  api -o /dev/null -X PATCH -d "{\"login_name\":\"$login\",\"source_id\":0,\"full_name\":\"$display (AI $role)\"}" "$B/admin/users/$login" && echo "full_name: $display (AI $role)"
+  var="${prefix}_GITEA_TOKEN"
+  if blank "$var" || ! has_org_scope "${!var:-}"; then   # :- the .env line may be newer than this shell's copy (set -u)
+    tok=$(curl -fsS -u "$login:$TEAM_GITEA_PASSWORD" -H 'Content-Type: application/json' -d "{\"name\":\"team-$(date +%s%N)-$$\",\"scopes\":$SCOPES}" "$B/users/$login/tokens" | jq -r .sha1)
+    [ ${#tok} -ge 20 ] || { echo "token minting for $login failed (wrong TEAM_GITEA_PASSWORD? mint one in the Gitea UI and paste it as $var)" >&2; exit 1; }
     setenv "$var" "$tok"; echo "$var written"
   fi
-done
+done <<<"$ROSTER"
 ensure_user "$HUMAN" "$TEAM_HUMAN_PASSWORD"   # external: your existing login -> "exists"
+# One LiteLLM virtual key per member (plan 16, G37): spend attributed by alias; LiteLLM is up whenever the team is bootstrapped.
+./scripts/litellm-keys.sh
 
 # 2. runner registration token: bundled runner only (the CLI lives in the bundled container)
 if has_profile gitea-runner && blank GITEA_RUNNER_TOKEN; then
@@ -60,9 +71,10 @@ ensure_team() {   # ensure_team <name> <can_create_org_repo> <units_map json> <m
   else api -o /dev/null -X PATCH -d "{\"name\":\"$name\",\"units_map\":$units}" "$B/teams/$tid" && echo "team $ORG/$name exists (units reconciled)"; fi   # units change over time (plan 13: coordinators need pulls write to label a PR)
   for who in "$@"; do api -o /dev/null -X PUT "$B/teams/$tid/members/$who" && echo "team $name: member $who"; done
 }
-ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' dinesh monica
-ensure_team reviewers    false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' gilfoyle
-ensure_team coordinators false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' jared   # pulls write: Gitea checks PR labels against the pulls unit (403 with read, verified 2026-09-14); his approvals stay unofficial (whitelist below)
+logins() { awk -v r="$1" '$2==r {print $4}' <<<"$ROSTER" | paste -sd ' '; }
+ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' $(logins builder)
+ensure_team reviewers    false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' $(logins reviewer)
+ensure_team coordinators false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' $(logins coordinator)   # pulls write: plan 13
 old=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="agents") | .id'); [ -n "$old" ] && api -o /dev/null -X DELETE "$B/teams/$old" && echo "removed legacy team $ORG/agents (write+create for everyone)"
 oid=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="Owners") | .id')
 api -o /dev/null -X PUT "$B/teams/$oid/members/$HUMAN" && echo "org owner $HUMAN"
@@ -72,10 +84,11 @@ ensure_label() {   # ensure_label <name> <color> <description>
   api "$B/orgs/$ORG/labels?limit=100" | jq -e --arg n "$1" '.[] | select(.name==$n)' >/dev/null && return 0
   api -o /dev/null -d "{\"name\":\"$1\",\"color\":\"$2\",\"description\":\"$3\",\"exclusive\":true}" "$B/orgs/$ORG/labels" && echo "label $1"
 }
-for i in 1 2 3 4 5; do ensure_label "complexity/$i" "#5b8def" "task + change complexity, 1 trivial .. 5 hard (Jared)"; done
-ensure_label confidence/low    "#d0312d" "unlikely to merge as-is (Jared)"
-ensure_label confidence/medium "#e0a800" "may need a change before merge (Jared)"
-ensure_label confidence/high   "#2e9e4f" "expected to merge as-is (Jared)"
+JUDGE=$(awk '$2=="coordinator" {print $3; exit}' <<<"$ROSTER")   # the coordinator scores (plan 13); label text names the current one
+for i in 1 2 3 4 5; do ensure_label "complexity/$i" "#5b8def" "task + change complexity, 1 trivial .. 5 hard ($JUDGE)"; done
+ensure_label confidence/low    "#d0312d" "unlikely to merge as-is ($JUDGE)"
+ensure_label confidence/medium "#e0a800" "may need a change before merge ($JUDGE)"
+ensure_label confidence/high   "#2e9e4f" "expected to merge as-is ($JUDGE)"
 ensure_label outcome/merged-as-is         "#2e9e4f" "merged at the scored sha (make score-sync)"
 ensure_label outcome/merged-after-changes "#e0a800" "merged after more commits (make score-sync)"
 ensure_label outcome/closed               "#888888" "closed unmerged (make score-sync)"
@@ -83,7 +96,9 @@ ensure_label outcome/closed               "#888888" "closed unmerged (make score
 # Template repository: python-template (workflow for THIS mode's runner label + starter files + the protection rule).
 # Agents generate new repos from it (agents/bin/new-repo); `protected_branch:true` copies the rule at birth.
 TPL=python-template
-PROT="{\"branch_name\":\"main\",\"enable_push\":false,\"enable_status_check\":true,\"status_check_contexts\":[\"ci / test (pull_request)\"],\"required_approvals\":1,\"block_on_rejected_reviews\":true,\"block_admin_merge_override\":true,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"],\"enable_approvals_whitelist\":true,\"approvals_whitelist_username\":[\"gilfoyle\"],\"approvals_whitelist_teams\":[\"reviewers\"]}"
+REVIEWERS_JSON=$(awk '$2=="reviewer" {print $4}' <<<"$ROSTER" | jq -R . | jq -sc .)   # ["gilfoyle"] on the default team
+REVIEWERS_SORTED=$(awk '$2=="reviewer" {print $4}' <<<"$ROSTER" | sort | paste -sd,)
+PROT="{\"branch_name\":\"main\",\"enable_push\":false,\"enable_status_check\":true,\"status_check_contexts\":[\"ci / test (pull_request)\"],\"required_approvals\":1,\"block_on_rejected_reviews\":true,\"block_admin_merge_override\":true,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"],\"enable_approvals_whitelist\":true,\"approvals_whitelist_username\":$REVIEWERS_JSON,\"approvals_whitelist_teams\":[\"reviewers\"]}"
 if [ "$(code -H "$A" "$B/repos/$ORG/$TPL")" != 200 ]; then
   api -d "{\"name\":\"$TPL\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\",\"template\":true,\"description\":\"template for repositories the agent team creates\"}" "$B/orgs/$ORG/repos" >/dev/null && echo "created $ORG/$TPL"
 fi
@@ -123,10 +138,10 @@ want=$(printf '%s\n' "$ADMIN" "$HUMAN" | sort -u | paste -sd,)
 for r in $(api "$B/orgs/$ORG/repos?limit=50" | jq -r '.[].name'); do
   if [ "$(code -H "$A" "$B/repos/$ORG/$r/branch_protections/main")" != 200 ]; then
     api -o /dev/null -d "$PROT" "$B/repos/$ORG/$r/branch_protections" && echo "$r: branch protection on main: CI check + 1 approval, merge by $want only"
-  elif [ "$(api "$B/repos/$ORG/$r/branch_protections/main" | jq -r '[.enable_merge_whitelist, .block_admin_merge_override, .enable_approvals_whitelist, ((.approvals_whitelist_username//[])|sort|join(",")), (.merge_whitelist_usernames|sort|unique|join(","))] | join(" ")')" != "true true true gilfoyle $want" ]; then
-    api -o /dev/null -X PATCH -d "{\"enable_merge_whitelist\":true,\"block_admin_merge_override\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"],\"enable_approvals_whitelist\":true,\"approvals_whitelist_username\":[\"gilfoyle\"],\"approvals_whitelist_teams\":[\"reviewers\"]}" "$B/repos/$ORG/$r/branch_protections/main" && echo "$r: protection repaired (merge by $want, admins cannot override, gilfoyle's approvals count)"
+  elif [ "$(api "$B/repos/$ORG/$r/branch_protections/main" | jq -r '[.enable_merge_whitelist, .block_admin_merge_override, .enable_approvals_whitelist, ((.approvals_whitelist_username//[])|sort|join(",")), (.merge_whitelist_usernames|sort|unique|join(","))] | join(" ")')" != "true true true $REVIEWERS_SORTED $want" ]; then
+    api -o /dev/null -X PATCH -d "{\"enable_merge_whitelist\":true,\"block_admin_merge_override\":true,\"merge_whitelist_usernames\":[\"$ADMIN\",\"$HUMAN\"],\"enable_approvals_whitelist\":true,\"approvals_whitelist_username\":$REVIEWERS_JSON,\"approvals_whitelist_teams\":[\"reviewers\"]}" "$B/repos/$ORG/$r/branch_protections/main" && echo "$r: protection repaired (merge by $want, admins cannot override, approvals by $REVIEWERS_SORTED count)"
   else echo "$r: branch protection on main exists"; fi
-  for c in $(api "$B/repos/$ORG/$r/collaborators" | jq -r '.[] | select(.login=="dinesh" or .login=="gilfoyle" or .login=="jared" or .login=="monica") | .login'); do
+  for c in $(api "$B/repos/$ORG/$r/collaborators" | jq -r --arg m " $(awk '$2!="assistant" {print $4}' <<<"$ROSTER" | paste -sd ' ') " '.[] | select($m | contains(" " + .login + " ")) | .login'); do
     api -o /dev/null -X DELETE "$B/repos/$ORG/$r/collaborators/$c" && echo "$r: removed collaborator $c (team write only)"
   done
 done

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Shared entrypoint for the team agents. Runs as user `agent` inside the sprig image.
 set -euo pipefail
-: "${TEAM_ROLE:?}" "${BUZZ_RELAY_URL:?}"
+: "${TEAM_MEMBER:?}" "${TEAM_ROLE:?}" "${TEAM_NAME:?}" "${BUZZ_RELAY_URL:?}"
 # Checked here, not with :? in compose (that would break every `docker compose` call while the values are still blank).
-[[ "${BUZZ_ACP_RESPOND_TO_ALLOWLIST:-}" != ,* ]] || { echo "TEAM_ALLOWLIST is blank in .env -- put your pubkey there, then docker compose up -d $TEAM_ROLE" >&2; exit 1; }
-[ "$TEAM_ROLE" = erlich ] || [ -n "${GITEA_TOKEN:-}" ] || { echo "no Gitea token for $TEAM_ROLE -- run make team-bootstrap, then docker compose up -d $TEAM_ROLE" >&2; exit 1; }
+[[ "${BUZZ_ACP_RESPOND_TO_ALLOWLIST:-}" != ,* ]] || { echo "TEAM_ALLOWLIST is blank in .env -- put your pubkey there, then docker compose up -d $TEAM_MEMBER" >&2; exit 1; }
+[ "$TEAM_ROLE" = assistant ] || [ -n "${GITEA_TOKEN:-}" ] || { echo "no Gitea token for $TEAM_MEMBER -- run make team-bootstrap, then docker compose up -d $TEAM_MEMBER" >&2; exit 1; }
 url="${BUZZ_RELAY_URL/#ws:/http:}"; url="${url/#wss:/https:}"
 for i in $(seq 1 60); do curl -fsS -o /dev/null "$url/_liveness" && break; echo "waiting for relay at $url"; sleep 2; done
 
@@ -33,7 +33,7 @@ done
 
 # Git identity + Gitea credentials (builder/reviewer/coordinator only). Token never appears in the prompt.
 git config --global user.name "$BUZZ_ACP_DISPLAY_NAME"
-git config --global user.email "${GITEA_USER:-$TEAM_ROLE}@localhost"
+git config --global user.email "${GITEA_USER:-$TEAM_MEMBER}@localhost"
 git config --global init.defaultBranch main
 if [ -n "${GITEA_TOKEN:-}" ]; then
   git config --global credential.helper store
@@ -46,9 +46,21 @@ if [ -n "${GITEA_TOKEN:-}" ]; then
   chmod 600 "$HOME/.gitea.env"
 fi
 
-# Prompt = team norms + persona (base prompt is prepended by the harness itself)
-{ cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/${TEAM_ROLE}.md"; } > "$HOME/.prompt.md"
-sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$GILFOYLE_PUBKEY|${GILFOYLE_PUBKEY:-}|g; s|\$JARED_PUBKEY|${JARED_PUBKEY:-}|g" "$HOME/.prompt.md"   # non-secret values inlined for the same reason
+# Prompt = team norms + role duties + persona flavour + roster (base prompt is prepended by the harness itself). Plan 16.
+# TEAM_ROSTER: name=role=Display=title=pubkey;… rendered by team-render.py from team.toml; the first member of each role fills the placeholders.
+roster=""; roster_line=""; REVIEWER_NAME=""; REVIEWER_PUBKEY=""; COORDINATOR_NAME=""; COORDINATOR_PUBKEY=""; BUILDER_NAME=""
+while IFS='=' read -r n r d t p; do
+  [ -n "$n" ] || continue
+  roster+="- $d ($t)"$'\n'; roster_line+="${roster_line:+, }$d ($t)"
+  case "$r" in
+    reviewer)    [ -n "$REVIEWER_NAME" ]    || { REVIEWER_NAME=$d;    REVIEWER_PUBKEY=$p; } ;;
+    coordinator) [ -n "$COORDINATOR_NAME" ] || { COORDINATOR_NAME=$d; COORDINATOR_PUBKEY=$p; } ;;
+    builder)     [ -n "$BUILDER_NAME" ]     || BUILDER_NAME=$d ;;
+  esac
+done <<<"${TEAM_ROSTER//;/$'\n'}"
+{ cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/roles/${TEAM_ROLE}.md"; echo
+  cat "/opt/team/teams/${TEAM_NAME}/personas/${TEAM_PERSONA:-$TEAM_MEMBER.md}"; } > "$HOME/.prompt.md"
+sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$TEAM_ROSTER_LINE|$roster_line|g; s|\$REVIEWER_NAME|$REVIEWER_NAME|g; s|\$REVIEWER_PUBKEY|$REVIEWER_PUBKEY|g; s|\$COORDINATOR_NAME|$COORDINATOR_NAME|g; s|\$COORDINATOR_PUBKEY|$COORDINATOR_PUBKEY|g; s|\$BUILDER_NAME|$BUILDER_NAME|g" "$HOME/.prompt.md"   # non-secret values inlined: the shell tool cannot read env
 
 # Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
 # Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).
@@ -68,7 +80,7 @@ buzz users set-profile --name "$BUZZ_ACP_DISPLAY_NAME" --about "open-llm-stack t
 # context limit from the same registry read; keyring off (no D-Bus in a container); auto mode = no permission prompts.
 case "${TEAM_RUNTIME:-buzz-agent}" in
   goose)
-    command -v goose >/dev/null || { echo "TEAM_RUNTIME=goose but this image has no goose binary (make goose-image; make dinesh-runtime R=goose)" >&2; exit 1; }
+    command -v goose >/dev/null || { echo "TEAM_RUNTIME=goose but this image has no goose binary (make goose-image; make member-runtime N=$TEAM_MEMBER R=goose)" >&2; exit 1; }
     export BUZZ_ACP_AGENT_COMMAND=goose BUZZ_ACP_AGENT_ARGS="acp,--with-builtin,developer" BUZZ_ACP_MCP_COMMAND=""
     export GOOSE_PROVIDER=openai GOOSE_MODEL="$OPENAI_COMPAT_MODEL" OPENAI_HOST="${OPENAI_COMPAT_BASE_URL%/v1}" OPENAI_API_KEY="$OPENAI_COMPAT_API_KEY"
     export GOOSE_MODE=auto GOOSE_DISABLE_KEYRING=1 GOOSE_CONTEXT_LIMIT="$BUZZ_AGENT_MAX_CONTEXT_TOKENS" GOOSE_MAX_TURNS=200

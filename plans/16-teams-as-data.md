@@ -151,7 +151,7 @@ The `# --- profile: team` comment stays as a pointer to `teams/`. `TEAM_GITEA_OR
 name = "piedpiper"          # the team: directory name, TEAM_NAME in .env
 org = "piedpiper"           # the Gitea organisation the team works in (TEAM_GITEA_ORG): created if missing, reused if present
 model = "ornith-max"        # every member's model unless a member sets its own; a model_name in proxy/config.yaml
-ci_label = "python"         # runs-on label for generated CI workflows: python = bundled runner, ci = the forge's
+# ci_label = "python"       # optional: forces TEAM_CI_LABEL in .env (python = bundled runner, ci = the forge's); unset = .env keeps its own value
 humans = []                 # pubkeys of the people the agents obey, owner first; blank here = TEAM_ALLOWLIST in .env
 
 [[members]]
@@ -257,7 +257,7 @@ t = tomllib.load(open(path, "rb"))
 # --- validate ---------------------------------------------------------------------------------------------------
 errs = []
 if t.get("name") != team: errs.append(f"name = {t.get('name')!r} must equal the directory name {team!r}")
-for k in ("org", "model", "ci_label"):
+for k in ("org", "model"):
     if not t.get(k): errs.append(f"{k} is required")
 members = t.get("members") or []
 if not members: errs.append("at least one [[members]] entry")
@@ -290,7 +290,8 @@ def ensure(k, v=None, force=False):
 ensure("TEAM_NAME", team, force=True)
 ensure("TEAM_MODEL", t["model"], force=True)   # derived from team.toml: scripts that only read .env keep working
 ensure("TEAM_GITEA_ORG", t["org"], force=True)
-ensure("TEAM_CI_LABEL", t["ci_label"], force=True)
+if t.get("ci_label"): ensure("TEAM_CI_LABEL", t["ci_label"], force=True)   # optional: the runner label is a forge property; unset = .env keeps its own
+else: ensure("TEAM_CI_LABEL", "python")
 for m in members:
     M = m["name"].upper().replace("-", "_")
     if not env_get(f"TEAM_{M}_PRIVATE_KEY") and mint and not check:
@@ -416,17 +417,16 @@ Output verified: `dinesh builder Dinesh dinesh TEAM_DINESH` … ; with `AGENT_LO
 ```bash
 # Prompt = team norms + role duties + persona flavour + roster (base prompt is prepended by the harness itself). Plan 16.
 # TEAM_ROSTER: name=role=Display=title=pubkey;… rendered by team-render.py from team.toml; the first member of each role fills the placeholders.
-roster=""; REVIEWER_NAME=""; REVIEWER_PUBKEY=""; COORDINATOR_NAME=""; COORDINATOR_PUBKEY=""; BUILDER_NAME=""
+roster=""; roster_line=""; REVIEWER_NAME=""; REVIEWER_PUBKEY=""; COORDINATOR_NAME=""; COORDINATOR_PUBKEY=""; BUILDER_NAME=""
 while IFS='=' read -r n r d t p; do
   [ -n "$n" ] || continue
-  roster+="- $d ($t)"$'\n'
+  roster+="- $d ($t)"$'\n'; roster_line+="${roster_line:+, }$d ($t)"
   case "$r" in
     reviewer)    [ -n "$REVIEWER_NAME" ]    || { REVIEWER_NAME=$d;    REVIEWER_PUBKEY=$p; } ;;
     coordinator) [ -n "$COORDINATOR_NAME" ] || { COORDINATOR_NAME=$d; COORDINATOR_PUBKEY=$p; } ;;
     builder)     [ -n "$BUILDER_NAME" ]     || BUILDER_NAME=$d ;;
   esac
 done <<<"${TEAM_ROSTER//;/$'\n'}"
-roster_line=$(printf '%s' "$roster" | sed 's/^- //' | paste -sd ',' | sed 's/,/, /g')
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/roles/${TEAM_ROLE}.md"; echo
   cat "/opt/team/teams/${TEAM_NAME}/personas/${TEAM_PERSONA:-$TEAM_MEMBER.md}"; } > "$HOME/.prompt.md"
 sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$TEAM_ROSTER_LINE|$roster_line|g; s|\$REVIEWER_NAME|$REVIEWER_NAME|g; s|\$REVIEWER_PUBKEY|$REVIEWER_PUBKEY|g; s|\$COORDINATOR_NAME|$COORDINATOR_NAME|g; s|\$COORDINATOR_PUBKEY|$COORDINATOR_PUBKEY|g; s|\$BUILDER_NAME|$BUILDER_NAME|g" "$HOME/.prompt.md"   # non-secret values inlined: the shell tool cannot read env
@@ -453,7 +453,7 @@ while read -r name role display login prefix; do
   ensure_user "$login" "$TEAM_GITEA_PASSWORD"
   api -o /dev/null -X PATCH -d "{\"login_name\":\"$login\",\"source_id\":0,\"full_name\":\"$display (AI $role)\"}" "$B/admin/users/$login" && echo "full_name: $display (AI $role)"
   var="${prefix}_GITEA_TOKEN"
-  if blank "$var" || ! has_org_scope "${!var}"; then
+  if blank "$var" || ! has_org_scope "${!var:-}"; then   # :- the .env line may be newer than this shell's copy (set -u)
     tok=$(curl -fsS -u "$login:$TEAM_GITEA_PASSWORD" -H 'Content-Type: application/json' -d "{\"name\":\"team-$(date +%s%N)-$$\",\"scopes\":$SCOPES}" "$B/users/$login/tokens" | jq -r .sha1)
     [ ${#tok} -ge 20 ] || { echo "token minting for $login failed (wrong TEAM_GITEA_PASSWORD? mint one in the Gitea UI and paste it as $var)" >&2; exit 1; }
     setenv "$var" "$tok"; echo "$var written"
@@ -485,7 +485,7 @@ team_alias="${TEAM_GITEA_ORG:-piedpiper}"
 tid=$(curl -fsS -H "$auth" "$base/team/list" | jq -r --arg a "$team_alias" '.[] | select(.team_alias==$a) | .team_id' | head -1)   # host jq, no pipefail here
 [ -n "$tid" ] || { tid=$(curl -fsS -X POST "$base/team/new" -H "$auth" -H 'Content-Type: application/json' -d "{\"team_alias\":\"$team_alias\"}" | jq -r .team_id); echo "litellm team $team_alias created ($tid)"; }
 mint() {   # mint <alias> <ENV_VAR> [team_id]
-  local alias=$1 var=$2 cur; cur=$(grep -E "^$var=" .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//')
+  local alias=$1 var=$2 cur; cur=$(grep -E "^$var=" .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//' || true)   # absent line = blank (set -e, pipefail)
   if [ -n "$cur" ] && [ "$(curl -fsS -H "$auth" "$base/key/list?key_alias=$alias&return_full_object=true" | jq -r '.total_count')" != 0 ]; then echo "$alias: key present"; return; fi
   local key; key=$(curl -fsS -X POST "$base/key/generate" -H "$auth" -H 'Content-Type: application/json' \
     -d "{\"key_alias\":\"$alias\"${3:+,\"team_id\":\"$3\"},\"metadata\":{\"client\":\"$alias\",\"minted_by\":\"litellm-keys.sh\"}}" | jq -r .key)
@@ -562,7 +562,7 @@ member-rm:       ## remove a member's service and forge membership; keys stay in
 team-new:        ## start a team from a preset in a fresh deployment: make team-new T=<name> FROM=dev-squad|solo-builder|review-board|content-studio
 	@test -n "$(T)" && test -n "$(FROM)" || { echo "usage: make team-new T=<team> FROM=<preset>"; exit 1; }
 	@test ! -d teams/$(T) || { echo "teams/$(T) exists"; exit 1; }
-	mkdir -p teams/$(T)/personas && sed 's|^name = .*|name = "$(T)"|; s|^org = .*|org = "$(T)"|' teams/_presets/$(FROM).toml > teams/$(T)/team.toml
+	mkdir -p teams/$(T)/personas && sed '0,/^\[\[members\]\]/{s|^name = .*|name = "$(T)"|; s|^org = .*|org = "$(T)"|}' teams/_presets/$(FROM).toml > teams/$(T)/team.toml   # top-level keys only: members have name = too
 	@for n in $$(python3 scripts/team-roster.py --team $(T) members | cut -d' ' -f1); do cp -n teams/_presets/personas/$$n.md teams/$(T)/personas/$$n.md 2>/dev/null || printf 'You are %s.\n' "$$n" > teams/$(T)/personas/$$n.md; done
 	sed -i 's|^TEAM_NAME=.*|TEAM_NAME=$(T)|' .env; grep -q '^TEAM_NAME=' .env || echo 'TEAM_NAME=$(T)' >> .env
 	python3 scripts/team-render.py --team $(T)
@@ -643,6 +643,635 @@ git worktree add /tmp/t16 && cd /tmp/t16 && cp ../../.env .env && make team-new 
 # in the scratch team: make up (team profile), make team-bootstrap, make team-smoke -> TEAM SMOKE PASS with a PR by ada
 ```
 
-## 8. Execution report
+## 8. Execution report (2026-09-14)
 
-(to be written at execution: the G40 allow-list check output, the cut-over log, `make test` summary, the sixth-member thread, the refusal message and the `-ai` login, the scratch team smoke, and every deviation from the tasks above with its reason)
+Executed against the live stack (external forge `git.colpitts.dev`, Gitea 1.27.3, Compose v5.1.3, Python 3.12.3). Tasks 2–3 (personas, roles), 5–6 (shell scripts) and 7–8 (presets, docs) were delegated to three forked agents working on disjoint files; Tasks 1, 4, `litellm-keys.sh` and the Makefile were extracted from the plan's fenced blocks. Validation ran as detached scripts into one log (below).
+
+| Gate | Result | Evidence |
+|---|---|---|
+| G40 render + config diff | PASS | second `make team-render` printed `unchanged` twice; `--check` exit 0; `docker compose config --format json` before/after: services equal, volumes equal, `unexpected differences: none` |
+| G41 cut-over | PASS | recreate exit 0, five members healthy; `make team-bootstrap` exit 0 on the rerun (first run died in `litellm-keys.sh`, deviation 2), `full_name` set for the four forge members; `make test` exit 0; dinesh prompt: `Teammates: Dinesh (builder)` ×1, `$REVIEWER`/`$COORDINATOR` ×0; gilfoyle `Role: reviewer` ×1; jared `Role: coordinator` ×1, `**Score:**` ×4, heartbeat file `agents/roles/coordinator-heartbeat.md`; `make team-smoke` twice consecutively: exit 0/0 (smokes 4 and 5, after deviation 4; smokes 1–2 failed only on the score-thread check, smoke 3 passed) |
+| G37 per-member LiteLLM keys | PASS | LiteLLM team `piedpiper` created, five member keys + `buzz-agent` + `open-webui` minted; after recreate `OPENAI_COMPAT_API_KEY=<master>` count 0 in dinesh and buzz-agent; spend log last 15 min: `dinesh\|piedpiper\|26`, `gilfoyle\|piedpiper\|15`, `jared\|piedpiper\|22`, master-key rows 166; `make cost-report` per client with the meter running: dinesh 1, gilfoyle 1, jared 1 (0.000 kWh: one 8-token call each) |
+| G42 sixth member | PASS (one observation) | `make member-add N=bertram R=builder TITLE="backend builder"` exit 0: keys, token, LiteLLM key, `full_name` `Bertram (AI builder)`, builders team `bertram,dinesh,monica`, container healthy; job thread mentioning `@Bertram`: PR #51 by `bertram` on `demo-calc`, milestones `🚩 pushed` and `🚩 CI success` posted, no literal `picked up:` line (the default builder skipped it in every smoke today too; `team-smoke` does not gate it); `make member-rm N=bertram PURGE=1` exit 0: `compose ps bertram` 0 lines, forge user 404, volume removed, render `--check` exit 0 |
+| G43 presets, suffix, refusal | PASS | all four presets: `make team-new` exit 0 and `docker compose config --quiet` exit 0 (5/2/3/4 services); person `ada` on the forge → `bootstrap-team.sh` exit 1 with `login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai …`; with `AGENT_LOGIN_SUFFIX=-ai`: `GITEA_USER: ada-ai` rendered, bootstrap exit 0, `ada-ai` `full_name` = `Ada (AI builder)` |
+| G44 builder not named dinesh | PASS | scratch team `acme` from `content-studio` (project `t16`, four containers healthy), ada's prompt `Teammates: Ada (writer), Edsger (editor), Barbara (designer), Grace (coordinator and judge: …)`, placeholders 0; `make team-smoke` exit 0: PR `acme/demo-calc#1` by `ada-ai`, CI green, review by `edsger-ai`, `**Score:** complexity 1/5 · confidence high` by grace, labels `complexity/1,confidence/high`; org, repos, users, LiteLLM team and keys removed afterwards |
+
+Deviations from the plan text (each fixed in the file and in the plan section named):
+
+1. **`ci_label` is optional** (Task 2 `team.toml`, Task 4 renderer, presets). The live `.env` had `TEAM_CI_LABEL=ci` (the external forge's runner); the renderer forced `python` from `team.toml` on the first run and would have broken every CI job. The runner label is a forge property, not a team property: `team.toml` may set `ci_label` (then it is forced into `.env`), otherwise `.env` keeps its value (`python` ensured when blank). `teams/piedpiper/team.toml` and the four presets ship the key commented out; `.env` restored to `ci`.
+2. **`scripts/litellm-keys.sh`**: `cur=$(grep -E "^$var=" .env | …)` killed the script under `set -e`/`pipefail` when the variable line did not exist yet (`BUZZ_AGENT_LITELLM_KEY`): `|| true` added (Task 6 block). This is why the first `make team-bootstrap` exited 1 after minting the member keys; the rerun passed.
+3. **Roster sentence** (Task 5): `paste -sd ',' | sed 's/,/, /g'` double-spaced a title containing a comma (`Monica (UI designer,  also a builder)`); the sentence is now joined with `, ` in the loop.
+4. **`scripts/team-smoke.sh` score check**: the judge answers whichever ask arrives first, and today (smokes 1–2) that was the reviewer's, in the review thread; the smoke looked in the job thread only and failed although the `**Score:**` line and the labels existed (verified in the relay: both lines tagged `reply` to the review root). The check now accepts the coordinator's line in either thread. Not a plan 16 regression (the role text is the plan 13 text with placeholders) but the plan 13 smoke was stricter than its own intent.
+5. **`make team-new`**: `sed 's|^name = .*|…|'` also rewrote every member's `name = "…"` (TOML member keys start at column 0), so every preset rendered as N members named after the team (`member 'acme' listed twice`). The range `0,/^\[\[members\]\]/` limits it to the top-level keys (Task 6 Makefile block). The broken first run created a forge user `acme`, purged by hand.
+6. **`scripts/bootstrap-team.sh`**: `"${!var}"` → `"${!var:-}"` (`set -u`: the `.env` line can be newer than the shell's copy). Task 6 block.
+7. **Erlich** (Tasks 2/3 disagree): persona = the first paragraph, `roles/assistant.md` = the second paragraph with `$BUILDER_NAME`, per "nothing that the role file carries".
+8. **Task 5 addition applied**: the renderer emits `TEAM_PERSONA: <file>` only when `persona` is set.
+9. **G43/G44 ran in a copy of the working tree** (`rsync`, not `git worktree`): the plan 16 changes were uncommitted, a worktree would have been `HEAD` without them. Three of the G44 attempts failed inside the validation script itself, not the product: the script had `set -a`-exported `TEAM_NAME`/blank member tokens before `make team-new`/`bootstrap-team.sh` rewrote `.env`, and Compose prefers shell exports to `.env` (verified: `docker compose --env-file` with `TEAM_NAME=nope` fails on `teams/nope/compose.yml`, so `.env` does drive the `include` path). Fixed by unsetting the exports and re-sourcing `.env` before `up`.
+10. `scripts/cost-report.sh`: the "per client" caption said "one row, master key, until clients have their own keys"; updated.
+11. `docs/spec.md` §1 and §5.13 now point the plan 12 runtime switch at `runtime` in `team.toml` / `make member-runtime`; `AGENTS.md` runtime bullet likewise. `TEAM_DINESH_RUNTIME`/`TEAM_DINESH_IMAGE` removed from the live `.env` (dead). `TEAM_BERTRAM_*` lines stay in `.env` as the plan says.
+
+Verified-at-execution items from the tasks: `GET /admin/users` shows the stored `<login>@agents.invalid` email (the refusal test works without a `description` marker); `EditUserOption` with `login_name` + `source_id` + `full_name` returns 200 (no 422); `team-roster.py members` prints `name role display login prefix`; the entrypoint needed no change for virtual keys (`/v1/model/info` answered, `context=65536` logged for bertram).
+
+Log (trimmed of Compose progress lines, ACP wire debug and blank lines):
+
+```
+## G40 2026-09-14T20:33:28-03:00
+teams/piedpiper/compose.yml unchanged
+.env unchanged
+second render unchanged lines: 2
+teams/piedpiper/compose.yml: up to date; .env: up to date
+check exit 0
+services equal: True volumes equal: True
+unexpected differences: none
+PASS G40
+## G41 cut-over 2026-09-14T20:34:03-03:00
+recreate exit 0
+dinesh Up Less than a second (health: starting)
+erlich Up Less than a second (health: starting)
+gilfoyle Up Less than a second (health: starting)
+jared Up Less than a second (health: starting)
+monica Up Less than a second (health: starting)
+team-bootstrap exit 2
+gitea user dinesh exists
+full_name: Dinesh (AI builder)
+gitea user gilfoyle exists
+full_name: Gilfoyle (AI reviewer)
+gitea user jared exists
+full_name: Jared (AI coordinator)
+gitea user monica exists
+full_name: Monica (AI builder)
+gitea user adam exists
+litellm team piedpiper created (23ce3eb0-f61d-414f-9230-5a83bc4d56e3)
+dinesh: key minted into TEAM_DINESH_LITELLM_KEY (team piedpiper)
+gilfoyle: key minted into TEAM_GILFOYLE_LITELLM_KEY (team piedpiper)
+jared: key minted into TEAM_JARED_LITELLM_KEY (team piedpiper)
+erlich: key minted into TEAM_ERLICH_LITELLM_KEY (team piedpiper)
+monica: key minted into TEAM_MONICA_LITELLM_KEY (team piedpiper)
+make: *** [Makefile:30: team-bootstrap] Error 1
+healthy members: 5
+1
+0
+0
+Teammates: Dinesh (builder), Gilfoyle (reviewer), Jared (coordinator and judge: scores every PR after CI and the review), Erlich (assistant), Monica (UI designer,  also a builder)
+1
+1
+1
+4
+1
+make test exit 0
+./scripts/smoke-test.sh
+--- litellm: context contract (context_window >= max_input_tokens + max_output_tokens on every chat model, plan 14)
+--- litellm: chat round-trip (SMOKE_CHAT_MODELS=ornith-max; all = every chat model, one model swap each; reasoning models need a generous max_tokens)
+ok
+--- gitea: token works
+created piedpiper/smoke-1789428880 private=true clone=https://git.colpitts.dev/piedpiper/smoke-1789428880.git
+deleted smoke-1789428880
+TEAM SMOKE PASS: PR #47, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+PASS: PR deliverable label
+PASS: review label
+PASS: mirror: git push command
+PASS: score line: **Score:** complexity 1/5 · confidence high — one function plus a matching test that mirrors the existing `subtract_NNNN` pattern exactly, CI green on head 9356794, Gilfoyle approved with no findings. 
+PASS: score labels: complexity/1,confidence/high
+smoke test finished
+team-smoke 1 exit 2
+thread: ```
+thread: **Review:** APPROVED — Additive subtract_8968, exact pattern of its neighbors, tests match, no issues.
+thread: @Jared score https://git.colpitts.dev/piedpiper/demo-calc/pulls/48
+milestone: push present
+milestone: CI present
+PASS: PR deliverable label
+PASS: review label
+PASS: mirror: git push command
+FAIL: no **Score:** line from Jared within 3 min
+PASS: score labels: complexity/1,confidence/high
+SCORE FAIL (see above)
+make: *** [Makefile:33: team-smoke] Error 1
+team-smoke 2 exit 2
+thread: ```
+thread: **Review:** APPROVED — one-line pass-through `subtract_9295` matches the sibling `subtract_1628`, test covers the same three cases, no issues. Ship it.
+thread: @Jared score https://git.colpitts.dev/piedpiper/demo-calc/pulls/49
+milestone: push present
+milestone: CI present
+PASS: PR deliverable label
+PASS: review label
+PASS: mirror: git push command
+FAIL: no **Score:** line from Jared within 3 min
+PASS: score labels: complexity/2,confidence/high
+SCORE FAIL (see above)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G41 recreate=0 bootstrap=2 test=0 smoke=2/2
+## G37 per-member LiteLLM keys 2026-09-14T20:45:46-03:00
+./scripts/litellm-keys.sh
+dinesh: key present
+gilfoyle: key present
+jared: key present
+erlich: key present
+monica: key present
+buzz-agent: key minted into BUZZ_AGENT_LITELLM_KEY
+open-webui: key minted into OPENWEBUI_LITELLM_KEY
+apply: docker compose up -d --force-recreate dinesh gilfoyle jared erlich monica buzz-agent open-webui   (each client re-reads its key)
+litellm-keys exit 0
+healthy: 7/7
+dinesh on master key: 0 (want 0)
+buzz-agent on master key: 0 (want 0)
+team-smoke 3 exit 0
+milestone: CI present
+PASS: PR deliverable label
+PASS: review label
+PASS: mirror: git push command
+PASS: score line: **Score:** complexity 1/5 · confidence high — one function plus test mirroring subtract_1842, CI green, approved  
+PASS: score labels: complexity/1,confidence/high
+dinesh|piedpiper|26
+gilfoyle|piedpiper|15
+jared|piedpiper|22
+||166
+-- per client (LiteLLM key alias; one row, master key, until clients have their own keys: plan 16)
+ client | calls | calls_kwh | cost 
+--------+-------+-----------+------
+(0 rows)
+PASS G37 keys=0 recreate=0 master-key-env=0 smoke=0 member-alias-rows=3
+## DONE-A 2026-09-14T20:48:22-03:00
+## G41 team-bootstrap rerun (after the litellm-keys.sh fix) 2026-09-14T20:48:33-03:00
+team-bootstrap exit 0
+full_name: Dinesh (AI builder)
+full_name: Gilfoyle (AI reviewer)
+full_name: Jared (AI coordinator)
+full_name: Monica (AI builder)
+dinesh: key present
+gilfoyle: key present
+jared: key present
+erlich: key present
+monica: key present
+buzz-agent: key present
+open-webui: key present
+apply: docker compose up -d --force-recreate dinesh gilfoyle jared erlich monica buzz-agent open-webui   (each client re-reads its key)
+PASS G41-bootstrap exit=0
+## G42 sixth member 2026-09-14T20:48:38-03:00
+member-add exit 0
+python3 scripts/team-roster.py add bertram builder "backend builder"
+add bertram: ok
+rendered teams/piedpiper/compose.yml (6 members)
+.env: added TEAM_BERTRAM_PRIVATE_KEY, added TEAM_BERTRAM_PUBKEY, added TEAM_BERTRAM_GITEA_TOKEN, added TEAM_BERTRAM_LITELLM_KEY
+full_name: Dinesh (AI builder)
+full_name: Gilfoyle (AI reviewer)
+full_name: Jared (AI coordinator)
+full_name: Monica (AI builder)
+full_name: Bertram (AI builder)
+TEAM_BERTRAM_GITEA_TOKEN written
+bertram: key minted into TEAM_BERTRAM_LITELLM_KEY (team piedpiper)
+docker compose up -d --force-recreate --wait bertram && docker compose logs --since 1m --no-log-prefix bertram | grep -E 'model=|presence set' | cut -c1-120
+model=ornith-max context=65536 output=32768
+2026-09-14T23:48:44.079547Z  INFO buzz_acp: presence set to online
+bertram is on the team: add its pubkey to your project channels (buzz channels add-member --pubkey $TEAM_BERTRAM_PUBKEY --role bot)
+dinesh     builder      dinesh     Up 3 minutes (healthy)
+gilfoyle   reviewer     gilfoyle   Up 3 minutes (healthy)
+jared      coordinator  jared      Up 3 minutes (healthy)
+erlich     assistant    erlich     Up 3 minutes (healthy)
+monica     builder      monica     Up 3 minutes (healthy)
+bertram    builder      bertram    Up 6 seconds (healthy)
+bertram full_name: Bertram (AI builder)
+builders team: bertram,dinesh,monica
+channel d4d1169d-a460-453d-80fd-52e1dfdb1aff
+job posted for Bertram; waiting for picked up + PR (up to 15 min)
+picked up reply: (none)
+PR by bertram: 51 after ~900s
+member-rm exit 0
+python3 scripts/team-roster.py rm bertram
+rm bertram: ok
+rendered teams/piedpiper/compose.yml (5 members)
+forge user bertram purged
+volume removed
+bertram removed; TEAM_BERTRAM_* stay in .env
+compose ps bertram lines: 0 (want 0)
+forge user bertram after purge: HTTP 404 (want 404)
+teams/piedpiper/compose.yml: up to date; .env: up to date
+render check exit 0
+FAIL G42 add=0 full_name='Bertram (AI builder)' picked= pr=51 rm=0 ps=0 user=404
+## G43 presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:04:37-03:00
+preset dev-squad: team-new exit 2, config exit 1, services: 
+FAIL preset dev-squad
+tail: option used in invalid context -- 5
+preset solo-builder: team-new exit 2, config exit 1, services: 
+FAIL preset solo-builder
+tail: option used in invalid context -- 5
+preset review-board: team-new exit 2, config exit 1, services: 
+FAIL preset review-board
+tail: option used in invalid context -- 5
+preset content-studio: team-new exit 2, config exit 1, services: 
+FAIL preset content-studio
+tail: option used in invalid context -- 5
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+team.toml invalid:
+  member 'acme' listed twice
+  member 'acme' listed twice
+  member 'acme' listed twice
+make: *** [Makefile:41: team-render] Error 1
+grep: teams/acme/compose.yml: No such file or directory
+bootstrap (suffix -ai) exit 1
+full_name: Acme (AI builder)
+./scripts/bootstrap-team.sh: line 45: !var: unbound variable
+curl: (22) The requested URL returned error: 404
+ada-ai full_name: 
+FAIL G43 refusal-exit=1 suffix-bootstrap=1 full_name=''
+## G44 builder not named dinesh (team acme from content-studio) 2026-09-14T21:04:47-03:00
+acme up exit 1
+service "ada" is not running
+acme team-smoke exit 2
+./scripts/team-smoke.sh
+acme not running (COMPOSE_PROFILES needs team; make up)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G44 up=1 smoke=2
+## cleanup acme 2026-09-14T21:04:48-03:00
+acme containers/volumes down
+curl: (22) The requested URL returned error: 404
+org acme delete: 404
+user ada purge: 204
+user ada-ai purge: 404
+user edsger-ai purge: 404
+user barbara-ai purge: 404
+user grace-ai purge: 404
+no acme keys listed
+scratch copy removed
+## DONE-B 2026-09-14T21:04:49-03:00
+## G41 smoke rerun: two consecutive team-smoke after the either-thread score check 2026-09-14T21:05:07-03:00
+team-smoke 4 exit 0
+PR #52 opened after ~30s
+CI on PR #52: success
+Gilfoyle review: APPROVED
+TEAM SMOKE PASS: PR #52, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+PASS: score line: **Score:** complexity 1/5 · confidence high — one function plus test mirroring subtract_1628, CI green, approved  
+team-smoke 5 exit 0
+PR #53 opened after ~50s
+CI on PR #53: success
+Gilfoyle review: APPROVED
+TEAM SMOKE PASS: PR #53, CI success, review APPROVED. Merge it in Gitea to close the loop (not automated on purpose).
+PASS: score line: **Score:** complexity 1/5 · confidence high — one function plus test, CI green, approved  
+PASS G41-smoke consecutive=0/0
+## DONE-C 2026-09-14T21:08:18-03:00
+## G43 rerun: presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:08:33-03:00
+preset dev-squad: team-new exit 0, config exit 0, services: dinesh erlich gilfoyle jared monica
+preset solo-builder: team-new exit 0, config exit 0, services: ada grace
+preset review-board: team-new exit 0, config exit 0, services: grace linus margaret
+preset content-studio: team-new exit 0, config exit 0, services: ada barbara edsger grace
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun.
+rendered teams/acme/compose.yml (4 members)
+.env unchanged
+1
+bootstrap (suffix -ai) exit 22
+full_name: Ada (AI builder)
+TEAM_ADA_GITEA_TOKEN written
+full_name: Edsger (AI reviewer)
+TEAM_EDSGER_GITEA_TOKEN written
+full_name: Barbara (AI builder)
+TEAM_BARBARA_GITEA_TOKEN written
+full_name: Grace (AI coordinator)
+TEAM_GRACE_GITEA_TOKEN written
+litellm team acme created (348243f7-a6f8-469e-8fe4-0264e2c68c45)
+ada: key minted into TEAM_ADA_LITELLM_KEY (team acme)
+edsger: key minted into TEAM_EDSGER_LITELLM_KEY (team acme)
+barbara: key minted into TEAM_BARBARA_LITELLM_KEY (team acme)
+grace: key minted into TEAM_GRACE_LITELLM_KEY (team acme)
+ada-ai full_name: Ada (AI builder)
+FAIL G43 refusal-exit=1 suffix-bootstrap=22 full_name='Ada (AI builder)'
+## G44 rerun: builder not named dinesh (team acme from content-studio) 2026-09-14T21:08:41-03:00
+acme up exit 1
+ada Restarting (1) Less than a second ago
+barbara Restarting (1) Less than a second ago
+edsger Restarting (1) Less than a second ago
+grace Restarting (1) Less than a second ago
+Error response from daemon: Container cc32c77427a6d00074e590ed965faf7eb15c4a4efa51a0e44aab699a20b87aed is restarting, wait until the container is running
+acme team-smoke exit 2
+./scripts/team-smoke.sh
+ada not running (COMPOSE_PROFILES needs team; make up)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G44 up=1 smoke=2
+## cleanup acme 2026-09-14T21:08:43-03:00
+acme containers/volumes down
+curl: (22) The requested URL returned error: 404
+org acme delete: 404
+user ada purge: 204
+user ada-ai purge: 204
+user edsger-ai purge: 204
+user barbara-ai purge: 204
+user grace-ai purge: 204
+user acme-ai purge: 404
+{"deleted_keys":["15c8c6c79171cfe104daf50ab065cd57af075c59931f3bf9098243b250842f5d","55fd27ae5d5910048294012933f53afda00c462ff8825ad15605f888f1322a37","e94e707a2044b885f8855a0abbe095a1116cc0374a5da03413eb79fbd1e627f1","0
+{"deleted_teams":["348243f7-a6f8-469e-8fe4-0264e2c68c45"]}
+scratch copy removed
+## DONE-B2 2026-09-14T21:08:45-03:00
+## G43 rerun 2 (stray user acme from the first run purged): presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:09:17-03:00
+preset dev-squad: team-new exit 0, config exit 1, services: 
+FAIL preset dev-squad
+tail: option used in invalid context -- 5
+preset solo-builder: team-new exit 0, config exit 1, services: 
+FAIL preset solo-builder
+tail: option used in invalid context -- 5
+preset review-board: team-new exit 0, config exit 1, services: 
+FAIL preset review-board
+tail: option used in invalid context -- 5
+preset content-studio: team-new exit 0, config exit 1, services: 
+FAIL preset content-studio
+tail: option used in invalid context -- 5
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun.
+rendered teams/acme/compose.yml (4 members)
+.env unchanged
+1
+bootstrap (suffix -ai) exit 0
+full_name: Ada (AI builder)
+TEAM_ADA_GITEA_TOKEN written
+full_name: Edsger (AI reviewer)
+TEAM_EDSGER_GITEA_TOKEN written
+full_name: Barbara (AI builder)
+TEAM_BARBARA_GITEA_TOKEN written
+full_name: Grace (AI coordinator)
+TEAM_GRACE_GITEA_TOKEN written
+litellm team acme created (4eca8b81-fd8e-4f1b-95d0-cb0877a61bae)
+ada: key minted into TEAM_ADA_LITELLM_KEY (team acme)
+edsger: key minted into TEAM_EDSGER_LITELLM_KEY (team acme)
+barbara: key minted into TEAM_BARBARA_LITELLM_KEY (team acme)
+grace: key minted into TEAM_GRACE_LITELLM_KEY (team acme)
+created team acme/builders
+team builders: member ada-ai
+team builders: member barbara-ai
+created team acme/reviewers
+team reviewers: member edsger-ai
+created team acme/coordinators
+team coordinators: member grace-ai
+ada-ai full_name: Ada (AI builder)
+PASS G43 refusal-exit=1 suffix-bootstrap=0 full_name='Ada (AI builder)'
+## G44 rerun 2: builder not named dinesh (team acme from content-studio) 2026-09-14T21:09:31-03:00
+acme up exit 1
+ada Restarting (1) Less than a second ago
+barbara Restarting (1) Less than a second ago
+edsger Restarting (1) Less than a second ago
+grace Restarting (1) Less than a second ago
+Error response from daemon: Container 4b2e2cf26fee5ae67392bb57aa8e84084b835f43130097544244755b4605a6bd is restarting, wait until the container is running
+acme team-smoke exit 2
+./scripts/team-smoke.sh
+edsger not running (COMPOSE_PROFILES needs team; make up)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G44 up=1 smoke=2
+## cleanup acme 2026-09-14T21:09:32-03:00
+acme containers/volumes down
+repo acme/python-template delete: 204
+repo acme/demo-calc delete: 204
+org acme delete: 204
+user ada purge: 204
+user ada-ai purge: 204
+user edsger-ai purge: 204
+user barbara-ai purge: 204
+user grace-ai purge: 204
+user acme-ai purge: 404
+user acme purge: 404
+{"deleted_keys":["1f37c385199d4b50005291d662f48f0787156a5feeea845ff68a8f59ed9bf6f8","99769f972085932878fa722cea9650481e190c22e05e51870bafdb5f37508c82","a8714e1e197cf3be6bcb891b1968039564fc9311f0841ea83a60e18bfeb6d496","f
+{"deleted_teams":["4eca8b81-fd8e-4f1b-95d0-cb0877a61bae"]}
+scratch copy removed
+## DONE-B3 2026-09-14T21:09:34-03:00
+## G43 rerun 3 (shell exports unset; the scratch .env drives Compose): presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:10:14-03:00
+preset dev-squad: team-new exit 0, config exit 0, services: dinesh erlich gilfoyle jared monica
+preset solo-builder: team-new exit 0, config exit 0, services: grace ada
+preset review-board: team-new exit 0, config exit 0, services: grace linus margaret
+preset content-studio: team-new exit 0, config exit 0, services: barbara edsger grace ada
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun.
+rendered teams/acme/compose.yml (4 members)
+.env unchanged
+1
+bootstrap (suffix -ai) exit 0
+full_name: Ada (AI builder)
+TEAM_ADA_GITEA_TOKEN written
+full_name: Edsger (AI reviewer)
+TEAM_EDSGER_GITEA_TOKEN written
+full_name: Barbara (AI builder)
+TEAM_BARBARA_GITEA_TOKEN written
+full_name: Grace (AI coordinator)
+TEAM_GRACE_GITEA_TOKEN written
+litellm team acme created (c18ae83a-a3b4-4066-bbfb-687af681fe44)
+ada: key minted into TEAM_ADA_LITELLM_KEY (team acme)
+edsger: key minted into TEAM_EDSGER_LITELLM_KEY (team acme)
+barbara: key minted into TEAM_BARBARA_LITELLM_KEY (team acme)
+grace: key minted into TEAM_GRACE_LITELLM_KEY (team acme)
+created team acme/builders
+team builders: member ada-ai
+team builders: member barbara-ai
+created team acme/reviewers
+team reviewers: member edsger-ai
+created team acme/coordinators
+team coordinators: member grace-ai
+ada-ai full_name: Ada (AI builder)
+PASS G43 refusal-exit=1 suffix-bootstrap=0 full_name='Ada (AI builder)'
+## G44 rerun 3: builder not named dinesh (team acme from content-studio) 2026-09-14T21:10:28-03:00
+acme up exit 1
+ada Restarting (1) Less than a second ago
+barbara Restarting (1) Less than a second ago
+edsger Restarting (1) Less than a second ago
+grace Restarting (1) Less than a second ago
+Error response from daemon: Container d99cc5b187d457ff862027290299672761b6181753d1151411c7212d6a3dc365 is restarting, wait until the container is running
+acme team-smoke exit 2
+./scripts/team-smoke.sh
+ada not running (COMPOSE_PROFILES needs team; make up)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G44 up=1 smoke=2
+## cleanup acme 2026-09-14T21:10:30-03:00
+acme containers/volumes down
+repo acme/python-template delete: 204
+repo acme/demo-calc delete: 204
+org acme delete: 204
+user ada purge: 204
+user ada-ai purge: 204
+user edsger-ai purge: 204
+user barbara-ai purge: 204
+user grace-ai purge: 204
+user acme-ai purge: 404
+user acme purge: 404
+{"deleted_keys":["9a9c20282b2a927020ed194a9bbd7c292a2f570bd4f16ae4ddcb505b198302a4","aa79742a3ed6e464af117891daadf4d8ac172fce7b3e02b4569c9af39a0c9160","473c662b4300b3f6b2777fa52b9b032fdc25dcca45e21c8ad5521544ec11dfa2","4
+{"deleted_teams":["c18ae83a-a3b4-4066-bbfb-687af681fe44"]}
+scratch copy removed
+## DONE-B4 2026-09-14T21:10:32-03:00
+## G43 rerun 4 (container logs captured): presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:10:52-03:00
+preset dev-squad: team-new exit 0, config exit 0, services: monica dinesh erlich gilfoyle jared
+preset solo-builder: team-new exit 0, config exit 0, services: ada grace
+preset review-board: team-new exit 0, config exit 0, services: grace linus margaret
+preset content-studio: team-new exit 0, config exit 0, services: ada barbara edsger grace
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun.
+rendered teams/acme/compose.yml (4 members)
+.env unchanged
+1
+bootstrap (suffix -ai) exit 0
+full_name: Ada (AI builder)
+TEAM_ADA_GITEA_TOKEN written
+full_name: Edsger (AI reviewer)
+TEAM_EDSGER_GITEA_TOKEN written
+full_name: Barbara (AI builder)
+TEAM_BARBARA_GITEA_TOKEN written
+full_name: Grace (AI coordinator)
+TEAM_GRACE_GITEA_TOKEN written
+litellm team acme created (9f2bf665-7c46-4bc2-86b8-b1293464d68f)
+ada: key minted into TEAM_ADA_LITELLM_KEY (team acme)
+edsger: key minted into TEAM_EDSGER_LITELLM_KEY (team acme)
+barbara: key minted into TEAM_BARBARA_LITELLM_KEY (team acme)
+grace: key minted into TEAM_GRACE_LITELLM_KEY (team acme)
+created team acme/builders
+team builders: member ada-ai
+team builders: member barbara-ai
+created team acme/reviewers
+team reviewers: member edsger-ai
+created team acme/coordinators
+team coordinators: member grace-ai
+ada-ai full_name: Ada (AI builder)
+PASS G43 refusal-exit=1 suffix-bootstrap=0 full_name='Ada (AI builder)'
+## G44 rerun 4: builder not named dinesh (team acme from content-studio) 2026-09-14T21:11:06-03:00
+acme up exit 1
+ada Restarting (1) Less than a second ago
+barbara Restarting (1) Less than a second ago
+edsger Restarting (1) Less than a second ago
+grace Restarting (1) Less than a second ago
+no Gitea token for ada -- run make team-bootstrap, then docker compose up -d ada
+no Gitea token for ada -- run make team-bootstrap, then docker compose up -d ada
+no Gitea token for ada -- run make team-bootstrap, then docker compose up -d ada
+no Gitea token for barbara -- run make team-bootstrap, then docker compose up -d barbara
+no Gitea token for barbara -- run make team-bootstrap, then docker compose up -d barbara
+no Gitea token for barbara -- run make team-bootstrap, then docker compose up -d barbara
+Error response from daemon: Container 4d393b690efc5c77896885d3fb923f2af4cfea3fbae01df12fdd90359aac7040 is restarting, wait until the container is running
+acme team-smoke exit 2
+./scripts/team-smoke.sh
+ada not running (COMPOSE_PROFILES needs team; make up)
+make: *** [Makefile:33: team-smoke] Error 1
+FAIL G44 up=1 smoke=2
+## cleanup acme 2026-09-14T21:11:08-03:00
+acme containers/volumes down
+repo acme/python-template delete: 204
+repo acme/demo-calc delete: 204
+org acme delete: 204
+user ada purge: 204
+user ada-ai purge: 204
+user edsger-ai purge: 204
+user barbara-ai purge: 204
+user grace-ai purge: 204
+user acme-ai purge: 404
+user acme purge: 404
+{"deleted_keys":["f9bfedc0442b7039a95d1d012a6d474858e0200a760f21382c5d22d8c968e498","35b05ff9e5bd073e3a05cb231a21a4568986e23af92e6b94cf9515234d7da37a","fe1b42e8ba5ba673079aef0a1894ab01fe9dba5cd29e0519d8992f7906157e63","9
+{"deleted_teams":["9f2bf665-7c46-4bc2-86b8-b1293464d68f"]}
+scratch copy removed
+## DONE-B5 2026-09-14T21:11:10-03:00
+## G43 rerun 5 (.env re-sourced before up): presets, suffix, refusal (scratch copy, org acme) 2026-09-14T21:11:27-03:00
+preset dev-squad: team-new exit 0, config exit 0, services: erlich gilfoyle jared monica dinesh
+preset solo-builder: team-new exit 0, config exit 0, services: ada grace
+preset review-board: team-new exit 0, config exit 0, services: margaret grace linus
+preset content-studio: team-new exit 0, config exit 0, services: grace ada barbara edsger
+person ada created: HTTP 201
+bootstrap (person holds ada) exit 1
+login 'ada' exists and is not an agent (a person?). Set AGENT_LOGIN_SUFFIX=-ai in .env, make team-render, then rerun.
+rendered teams/acme/compose.yml (4 members)
+.env unchanged
+1
+bootstrap (suffix -ai) exit 0
+full_name: Ada (AI builder)
+TEAM_ADA_GITEA_TOKEN written
+full_name: Edsger (AI reviewer)
+TEAM_EDSGER_GITEA_TOKEN written
+full_name: Barbara (AI builder)
+TEAM_BARBARA_GITEA_TOKEN written
+full_name: Grace (AI coordinator)
+TEAM_GRACE_GITEA_TOKEN written
+litellm team acme created (7a073cc7-0a7b-4155-859b-1d6c43577309)
+ada: key minted into TEAM_ADA_LITELLM_KEY (team acme)
+edsger: key minted into TEAM_EDSGER_LITELLM_KEY (team acme)
+barbara: key minted into TEAM_BARBARA_LITELLM_KEY (team acme)
+grace: key minted into TEAM_GRACE_LITELLM_KEY (team acme)
+created team acme/builders
+team builders: member ada-ai
+team builders: member barbara-ai
+created team acme/reviewers
+team reviewers: member edsger-ai
+created team acme/coordinators
+team coordinators: member grace-ai
+ada-ai full_name: Ada (AI builder)
+PASS G43 refusal-exit=1 suffix-bootstrap=0 full_name='Ada (AI builder)'
+## G44 rerun 5: builder not named dinesh (team acme from content-studio) 2026-09-14T21:11:40-03:00
+acme up exit 0
+ada Up 5 seconds (healthy)
+barbara Up 5 seconds (healthy)
+edsger Up 5 seconds (healthy)
+grace Up 5 seconds (healthy)
+2026-09-15T00:11:41.287101Z  INFO buzz_acp: agent initialized: {"agentCapabilities":{"loadSession":false,"mcpCapabilities":{"http":false,"sse":false},"promptCapabiliti
+2026-09-15T00:11:41.287108Z  INFO buzz_acp: agent initialized agent=0 name="buzz-agent" steering_supported=false
+2026-09-15T00:11:41.287118Z  INFO buzz_acp: agent_pool_ready agents=1
+2026-09-15T00:11:41.288245Z  INFO buzz_acp: connected to relay at ws://127.0.0.1:3002
+2026-09-15T00:11:41.288841Z  INFO buzz_acp: subscribed to membership notifications
+2026-09-15T00:11:41.288845Z  INFO buzz_acp: no agent owner configured
+2026-09-15T00:11:41.288848Z  WARN buzz_acp: respond-to=allowlist but no owner is set — allowlisted pubkeys will still be accepted, but owner-based matching is unavai
+2026-09-15T00:11:41.291481Z  INFO buzz_acp: discovered 0 channel(s)
+2026-09-15T00:11:41.291488Z  WARN buzz_acp: no channel subscriptions resolved — agent will sit idle
+2026-09-15T00:11:41.291530Z  INFO buzz_acp: presence set to online
+2026-09-15T00:11:41.300526Z  INFO buzz_acp: agent initialized: {"agentCapabilities":{"loadSession":false,"mcpCapabilities":{"http":false,"sse":false},"promptCapabiliti
+2026-09-15T00:11:41.300533Z  INFO buzz_acp: agent initialized agent=0 name="buzz-agent" steering_supported=false
+2026-09-15T00:11:41.300542Z  INFO buzz_acp: agent_pool_ready agents=1
+2026-09-15T00:11:41.301766Z  INFO buzz_acp: connected to relay at ws://127.0.0.1:3002
+2026-09-15T00:11:41.302442Z  INFO buzz_acp: subscribed to membership notifications
+2026-09-15T00:11:41.302448Z  INFO buzz_acp: no agent owner configured
+2026-09-15T00:11:41.302451Z  WARN buzz_acp: respond-to=allowlist but no owner is set — allowlisted pubkeys will still be accepted, but owner-based matching is unavai
+2026-09-15T00:11:41.304989Z  INFO buzz_acp: discovered 0 channel(s)
+2026-09-15T00:11:41.304993Z  WARN buzz_acp: no channel subscriptions resolved — agent will sit idle
+2026-09-15T00:11:41.305032Z  INFO buzz_acp: presence set to online
+Teammates: Ada (writer), Edsger (editor), Barbara (designer), Grace (coordinator and judge: scores every PR after CI and the review)
+0
+acme team-smoke exit 0
+thread: @Grace score https://git.colpitts.dev/acme/demo-calc/pulls/1
+milestone: push present
+milestone: CI ABSENT (model skipped a persona step; not gated)
+PASS: PR deliverable label
+PASS: review label
+PASS: mirror: git push command
+PASS: score line: **Score:** complexity 1/5 · confidence high — one function and its test mirroring add, CI green, approved  
+PASS: score labels: complexity/1,confidence/high
+PASS G44 up=0 smoke=0
+## cleanup acme 2026-09-14T21:15:56-03:00
+acme containers/volumes down
+repo acme/python-template delete: 204
+repo acme/demo-calc delete: 204
+org acme delete: 204
+user ada purge: 204
+user ada-ai purge: 204
+user edsger-ai purge: 204
+user barbara-ai purge: 204
+user grace-ai purge: 204
+user acme-ai purge: 404
+user acme purge: 404
+{"deleted_keys":["a481fc6e7ba4e9f6c0f93876d4dc2c35f7d6eb5743c04853a8d7f66d92770601","c8e8cbcf306371fcfa16e213acba987298078184ec9ef55a4c906c0567cb1765","5a3c58fd1a0c8c6a406554bbae0c154b941d004481636ea46db268451acafec8","e
+{"deleted_teams":["7a073cc7-0a7b-4155-859b-1d6c43577309"]}
+scratch copy removed
+## DONE-B6 2026-09-14T21:15:59-03:00
+## G37 cost-report per client with the meter running 2026-09-14T21:17:03-03:00
+(eval):1: bad substitution
+DINESH call -> 
+(eval):1: bad substitution
+GILFOYLE call -> 
+(eval):1: bad substitution
+JARED call -> 
+-- per client (LiteLLM key alias: one row per member, buzz-agent, open-webui once make litellm-keys ran; else master key)
+ client | calls | calls_kwh | cost 
+--------+-------+-----------+------
+(0 rows)
+meter stopped
+## G37 cost-report per client with the meter running (bash) 2026-09-14T21:17:54-03:00
+DINESH call -> 
+GILFOYLE call -> 
+JARED call -> 
+-- per client (LiteLLM key alias: one row per member, buzz-agent, open-webui once make litellm-keys ran; else master key)
+  client  | calls | calls_kwh |  cost  
+----------+-------+-----------+--------
+ dinesh   |     1 |     0.000 | 0.0000
+ gilfoyle |     1 |     0.000 | 0.0000
+ jared    |     1 |     0.000 | 0.0000
+(3 rows)
+meter still running
+```

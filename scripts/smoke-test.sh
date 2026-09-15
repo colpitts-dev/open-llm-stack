@@ -6,6 +6,9 @@ set -a; . ./.env; set +a
 BIND_HOST=${BIND_HOST:-127.0.0.1}
 has_profile() { [[ ",${COMPOSE_PROFILES:-}," == *",$1,"* ]]; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Team members by role (plan 16): the first builder / coordinator of teams/<TEAM_NAME>/team.toml; awk, not head (no SIGPIPE under pipefail)
+member() { python3 scripts/team-roster.py role "$1" | awk 'NR==1'; }
+member_var() { local pfx; pfx=$(python3 scripts/team-roster.py members | awk -v n="$1" '$1==n {print $5}'); local v="${pfx}_$2"; printf '%s' "${!v}"; }   # member_var <name> PUBKEY|GITEA_TOKEN
 
 test_litellm() {
   local base="http://${BIND_HOST}:${LITELLM_PORT:-3000}" auth="Authorization: Bearer ${LITELLM_MASTER_KEY}"
@@ -120,8 +123,9 @@ test_gitea_runner() {
 test_team_factory() {
   local base="${GITEA_PUBLIC_URL:-http://${BIND_HOST}:${GITEA_PORT:-3003}}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" org="${TEAM_GITEA_ORG:-piedpiper}"
   local name="factory-$(date +%s | tail -c 6)"
-  echo "--- team: repository factory (new-repo inside dinesh, no LLM)"
-  docker compose exec -T dinesh /opt/team/agents/bin/new-repo "$name" | head -1
+  local builder; builder=$(member builder)
+  echo "--- team: repository factory (new-repo inside $builder, no LLM)"
+  docker compose exec -T "$builder" /opt/team/agents/bin/new-repo "$name" | head -1
   curl -fsS -o /dev/null -H "$auth" "$base/repos/$org/$name/contents/.gitea/workflows/ci.yaml" && echo "workflow present"
   curl -fsS -H "$auth" "$base/repos/$org/$name/branch_protections/main" | jq -r '"protection: contexts=\(.status_check_contexts|join(",")) approvals=\(.required_approvals) merge=\(.merge_whitelist_usernames|join(",")) admin_override_blocked=\(.block_admin_merge_override)"'
   local collab; collab=$(curl -fsS -H "$auth" "$base/repos/$org/$name/collaborators" | jq -r 'length')
@@ -129,15 +133,16 @@ test_team_factory() {
   curl -fsS -o /dev/null -X DELETE -H "$auth" "$base/repos/$org/$name" && echo "deleted $name"
 }
 
-test_team_narrate() {   # G21: canned harness log through team-narrate.sh inside dinesh -> expected replies in a throwaway thread
+test_team_narrate() {   # G21: canned harness log through team-narrate.sh inside the builder -> expected replies in a throwaway thread
+  local builder bpub; builder=$(member builder); bpub=$(member_var "$builder" PUBKEY)
   local relay="${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}" sprig=ghcr.io/block/buzz-sprig:sha-e17cdd9
-  echo "--- team: progress mirror (canned log through team-narrate.sh in dinesh, no LLM)"
+  echo "--- team: progress mirror (canned log through team-narrate.sh in $builder, no LLM)"
   bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$TEAM_SMOKE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$relay" --entrypoint buzz "$sprig" "$@"; }
   local ch root root8 n
   ch=$(bz channels create --name "narrate-$(date +%s)" --type stream --visibility open --ttl 3600 | jq -r .channel_id)
-  bz channels add-member --channel "$ch" --pubkey "$TEAM_DINESH_PUBKEY" --role bot >/dev/null
+  bz channels add-member --channel "$ch" --pubkey "$bpub" --role bot >/dev/null
   root=$(bz messages send --channel "$ch" --content "job root (mirror probe)" | jq -r .event_id); root8="${root:0:8}"
-  docker compose exec -T -e TEAM_NARRATE=both dinesh bash /opt/team/team-narrate.sh >/dev/null <<EOF
+  docker compose exec -T -e TEAM_NARRATE=both "$builder" bash /opt/team/team-narrate.sh >/dev/null <<EOF
 2026-01-01T00:00:00.000000Z  INFO pool::prompt: turn starting for channel $ch (thread:$root8)
 2026-01-01T00:00:01.000000Z  INFO acp::stream: Picked up: probe narration line.
 
@@ -152,27 +157,37 @@ test_team_narrate() {   # G21: canned harness log through team-narrate.sh inside
 2026-01-01T00:00:09.000000Z  INFO pool::prompt: turn complete for channel $ch (conversation): end_turn
 EOF
   sleep 3
-  bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$TEAM_DINESH_PUBKEY" '.[] | select(.pubkey==$d) | "mirror: \(.content|gsub("\n";" | "))"'
-  n=$(bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$TEAM_DINESH_PUBKEY" '[.[] | select(.pubkey==$d)] | length')
-  [ "$n" = 2 ] && echo "mirror: 2 replies (narration + wrapped git push); skipped fetch, buzz send, final chunk, conversation turn" || fail "expected 2 mirror replies from dinesh, got $n"
+  bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$bpub" '.[] | select(.pubkey==$d) | "mirror: \(.content|gsub("\n";" | "))"'
+  n=$(bz messages thread --channel "$ch" --event "$root" | jq -r --arg d "$bpub" '[.[] | select(.pubkey==$d)] | length')
+  [ "$n" = 2 ] && echo "mirror: 2 replies (narration + wrapped git push); skipped fetch, buzz send, final chunk, conversation turn" || fail "expected 2 mirror replies from $builder, got $n"
 }
 
-test_team_runtime() {   # G23: dinesh runs the runtime .env asks for (plan 12)
-  echo "--- team: dinesh runtime = ${TEAM_DINESH_RUNTIME:-buzz-agent}"
-  docker compose exec -T dinesh sh -c 'tr "\0" " " </proc/1/cmdline | cut -c1-40; echo'
-  docker compose logs --since 24h --no-log-prefix dinesh 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -oE 'agent initialized agent=0 name="[a-z-]+"' | tail -1
-  case "${TEAM_DINESH_RUNTIME:-buzz-agent}" in
-    goose) docker compose exec -T dinesh sh -c 'goose --version && pgrep -f "goose acp" >/dev/null && echo "goose acp running"' || fail "goose runtime requested but not running" ;;
-    *) docker compose exec -T dinesh sh -c 'pgrep -f buzz-agent >/dev/null && echo "buzz-agent running"' || fail "buzz-agent not running" ;;
+test_team_runtime() {   # G23: the builder runs the runtime team.toml asks for (plan 12 knob, per member since plan 16)
+  local builder rt; builder=$(member builder)
+  rt=$(python3 - "$builder" <<'PY'
+import sys, tomllib, os, re
+env = open(".env").read() if os.path.exists(".env") else ""
+m = re.search(r"(?m)^TEAM_NAME=(.*)$", env); team = (m.group(1).split("#", 1)[0].strip() if m else "") or "piedpiper"
+t = tomllib.load(open(f"teams/{team}/team.toml", "rb"))
+print(next((x.get("runtime", "buzz-agent") for x in t["members"] if x["name"] == sys.argv[1]), "buzz-agent"))
+PY
+)
+  echo "--- team: $builder runtime = $rt"
+  docker compose exec -T "$builder" sh -c 'tr "\0" " " </proc/1/cmdline | cut -c1-40; echo'
+  docker compose logs --since 24h --no-log-prefix "$builder" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -oE 'agent initialized agent=0 name="[a-z-]+"' | tail -1
+  case "$rt" in
+    goose) docker compose exec -T "$builder" sh -c 'goose --version && pgrep -f "goose acp" >/dev/null && echo "goose acp running"' || fail "goose runtime requested but not running" ;;
+    *) docker compose exec -T "$builder" sh -c 'pgrep -f buzz-agent >/dev/null && echo "buzz-agent running"' || fail "buzz-agent not running" ;;
   esac
 }
 
-test_team_score() {   # G26: script-only scoring path inside jared on the newest demo-calc PR; invalid rubric rejected (plan 13)
-  local base="${GITEA_PUBLIC_URL%/}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" judge="Authorization: token ${TEAM_JARED_GITEA_TOKEN}" org="${TEAM_GITEA_ORG:-piedpiper}"
-  echo "--- team: PR scoring (score-post with a canned rubric inside jared, no LLM)"
+test_team_score() {   # G26: script-only scoring path inside the coordinator on the newest demo-calc PR; invalid rubric rejected (plan 13)
+  local coord; coord=$(member coordinator)
+  local base="${GITEA_PUBLIC_URL%/}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" judge="Authorization: token $(member_var "$coord" GITEA_TOKEN)" org="${TEAM_GITEA_ORG:-piedpiper}"
+  echo "--- team: PR scoring (score-post with a canned rubric inside $coord, no LLM)"
   local n; n=$(curl -fsS -H "$auth" "$base/repos/$org/demo-calc/pulls?state=all&limit=1" | jq -r '.[0].number'); [ -n "$n" ] && [ "$n" != null ] || fail "no PR in demo-calc"
-  if docker compose exec -T jared bash -c 'printf "{\"scope\":0,\"novelty\":3}" > /tmp/bad.json; /opt/team/agents/bin/score-post demo-calc '"$n"' /tmp/bad.json' >/dev/null 2>&1; then fail "score-post accepted a bad rubric"; else echo "bad rubric rejected"; fi
-  docker compose exec -T jared bash -c 'cat > /tmp/r.json <<EOF
+  if docker compose exec -T "$coord" bash -c 'printf "{\"scope\":0,\"novelty\":3}" > /tmp/bad.json; /opt/team/agents/bin/score-post demo-calc '"$n"' /tmp/bad.json' >/dev/null 2>&1; then fail "score-post accepted a bad rubric"; else echo "bad rubric rejected"; fi
+  docker compose exec -T "$coord" bash -c 'cat > /tmp/r.json <<EOF
 {"scope":0,"novelty":0,"risk":0,"verification":0,"ambiguity":0,"tests":2,"ci":2,"review":2,"scope_match":2,"hygiene":2,"summary":"smoke: canned rubric","evidence":{"scope":"one function"}}
 EOF
 /opt/team/agents/bin/score-post demo-calc '"$n"' /tmp/r.json'

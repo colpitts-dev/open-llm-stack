@@ -334,7 +334,7 @@ External Gitea/GitHub: remove `gitea` from `COMPOSE_PROFILES`; nothing else in t
 
 ## The agent team
 
-Profiles `team` and `gitea-runner` turn the single bundled agent into a small development team that delivers **validated pull requests in Gitea**. Each agent is its own container from the sprig image (same harness as `buzz-agent`, host network, own volume at `/home/agent`, persona in `agents/<name>.md` on top of the shared `agents/TEAM.md`), talks to one model through LiteLLM, and obeys the pubkeys in `TEAM_ALLOWLIST` plus its teammates (agent-to-agent mentions such as Dinesh asking Gilfoyle for a review are otherwise dropped). Validated end to end on the reference host on 2026-09-13; the verified facts are in `docs/spec.md` §5.8.
+Profiles `team` and `gitea-runner` turn the single bundled agent into a small development team that delivers **validated pull requests in Gitea**. Each agent is its own container from the sprig image (same harness as `buzz-agent`, host network, own volume at `/home/agent`, prompt = the shared `agents/TEAM.md` + its role's duties in `agents/roles/<role>.md` + its persona in `teams/<team>/personas/<name>.md`), talks to one model through LiteLLM, and obeys the pubkeys in `TEAM_ALLOWLIST` plus its teammates (agent-to-agent mentions such as Dinesh asking Gilfoyle for a review are otherwise dropped). Validated end to end on the reference host on 2026-09-13; the verified facts are in `docs/spec.md` §5.8. Since plan 16 the team is **data**: members, roles, titles, runtimes and the model live in `teams/<team>/team.toml`, and `make team-render` turns that file into the Compose services (`teams/<team>/compose.yml`, generated, never edited by hand). The default team `piedpiper` is:
 
 | Agent | Role | Answers in | What it does |
 |---|---|---|---|
@@ -381,17 +381,30 @@ Prove the loop with `make team-smoke` (also run by `make test` when the profile 
 
 **Scores.** After Gilfoyle's verdict, Jared scores the PR from a fixed rubric: complexity 1–5 (scope, novelty, risk, verification, ambiguity) and confidence low / medium / high (tests, CI, review, scope match, diff hygiene; CI red caps at low). Effort is never evidence. The labels sort your review queue; the comment keeps the dimensions; `make score-sync` records what actually happened to each closed PR (`outcome/merged-as-is`, `merged-after-changes`, `closed`) and `make score-report` prints the confidence × outcome table, which is how you know whether "high" means anything. Scores never gate a merge.
 
-**Runtimes.** The harness speaks ACP to the runtime that owns the model loop. Default is `buzz-agent` (inside the sprig image). Dinesh can run on **goose** instead: `make goose-image` (builds `open-llm-stack/goose-agent:1.50.0` from a pinned Debian digest and the pinned goose release; the one build in this repository, needs the download and `apt-get`), then `make dinesh-runtime R=goose` (rewrites `TEAM_DINESH_RUNTIME` and `TEAM_DINESH_IMAGE` in `.env`, force-recreates `dinesh`); `make dinesh-runtime R=buzz-agent` switches back. Same persona, same LiteLLM model (`TEAM_MODEL`), same thread conventions and mirror. What changes: goose brings its own shell and file-editing tools and its own context management; its shell sees the container environment (the Gitea token included), whereas buzz-agent's shell is scrubbed; there is no reply guard on goose. Numbers from the first comparison are in `plans/12-goose-runtime.md` §7. Closed-weight runtimes (Claude Code's `claude-agent-acp`) are not wired: they would need an API key or subscription and are never a default here.
+**Runtimes.** The harness speaks ACP to the runtime that owns the model loop. Default is `buzz-agent` (inside the sprig image). Dinesh can run on **goose** instead: `make goose-image` (builds `open-llm-stack/goose-agent:1.50.0` from a pinned Debian digest and the pinned goose release; the one build in this repository, needs the download and `apt-get`), then `make member-runtime N=dinesh R=goose` (sets `runtime = "goose"` on his block in `team.toml`, re-renders, force-recreates `dinesh`; `make dinesh-runtime R=goose` is the plan 12 alias); `make member-runtime N=dinesh R=buzz-agent` switches back. The runtime is per member: any builder, reviewer or coordinator can run on goose while the rest stay on buzz-agent. Same persona, same LiteLLM model (`TEAM_MODEL`), same thread conventions and mirror. What changes: goose brings its own shell and file-editing tools and its own context management; its shell sees the container environment (the Gitea token included), whereas buzz-agent's shell is scrubbed; there is no reply guard on goose. Numbers from the first comparison are in `plans/12-goose-runtime.md` §7. Closed-weight runtimes (Claude Code's `claude-agent-acp`) are not wired: they would need an API key or subscription and are never a default here.
 
-**Switching the model.** `TEAM_MODEL` is the only knob: each agent reads `max_input_tokens`/`max_output_tokens` for it from LiteLLM's registry at start (logged as `model=<name> context=<in> output=<out>`), so there is no context variable to keep in sync.
+**Switching the model.** `model` in `team.toml` is the only knob (`make team-model` edits it and copies it into `TEAM_MODEL` in `.env` for the scripts that read only `.env`): each agent reads `max_input_tokens`/`max_output_tokens` for it from LiteLLM's registry at start (logged as `model=<name> context=<in> output=<out>`), so there is no context variable to keep in sync. A member may also set its own `model = "…"` in its block.
 
 ```bash
-make team-model M=qwen3.8-max    # checks the name against /v1/models, rewrites TEAM_MODEL, recreates the four agents
+make team-model M=qwen3.8-max    # checks the name against /v1/models, sets model in team.toml, re-renders, recreates every member
 docker compose logs --since 2m dinesh | grep model=    # model=qwen3.8-max context=106496 output=16384
 make team-model M=nope-model     # prints "not registered in proxy/config.yaml"; make exits 2
 ```
 
 Measured 2026-09-13: `ornith-max`, `qwen3.8-max` and `laguna-max` publish multi-step results; `qwen3.6-max` does not, so it is a poor choice for the team. On `qwen3.8-max` Dinesh answered a mention in ~20 s. The agents plus CI share one GPU slot on the host Ollama by queueing (Ollama 0.33.3 gives the qwen3.5 family a single slot whatever `OLLAMA_NUM_PARALLEL` says, see "GPU budget"); throughout the smoke run `docker exec ollama ollama ps` showed `100% GPU`.
+
+**Adding a member.** A member is a block in `teams/piedpiper/team.toml` plus a persona file; everything else is derived:
+
+```bash
+make member-add N=bertram R=builder TITLE="backend builder"   # appends the block, stubs teams/piedpiper/personas/bertram.md, renders,
+                                                              # creates the forge user bertram (full_name "Bertram (AI builder)"), token, team
+                                                              # membership and LiteLLM key, starts the service
+make team-status                                              # members, roles, logins, container state
+```
+
+Then edit the persona (voice, specialities, what the member never does; the duties come from the role file, do not repeat them) and add the new pubkey to your project channels: `buzz channels add-member --pubkey $TEAM_BERTRAM_PUBKEY --role bot` (members are not added to channels automatically). Roles are the closed list `builder`, `reviewer`, `coordinator`, `assistant` in `agents/roles/`, each mapped to a Gitea team; `TITLE` only changes how the roster introduces the member. Names are `[a-z][a-z0-9-]{1,30}`: the name is the service, the volume, the forge login and the `TEAM_<NAME>_*` prefix in `.env`. If your forge already has a person with that login, set `AGENT_LOGIN_SUFFIX=-ai` in `.env` and re-render: every agent then logs in as `<name>-ai`, and the bootstrap refuses to adopt a login that is not one of its own machine users. `make member-rm N=bertram` stops the service and removes the block and the forge team memberships (keys stay in `.env`); `PURGE=1` also deletes the forge user and the volume.
+
+**Your own team.** `make team-new T=<name> FROM=<preset>` copies a preset into `teams/<name>/`, sets `TEAM_NAME` in `.env` and renders it; then edit `team.toml` and the personas, `make up && make team-bootstrap`. Presets in `teams/_presets/`: `dev-squad` (the default five roles), `solo-builder` (one builder, one coordinator; reviews come from you, so a person satisfies the one required approval), `review-board` (two reviewers and a coordinator, no builder: a team that reviews human pull requests; `make team-smoke` does not apply) and `content-studio` (a writer and a designer as builders, an editor as reviewer, a coordinator). Presets use their own name pool (`ada`, `grace`, `linus`, `margaret`, `edsger`, `barbara`), so a second workforce on the same forge never collides with `piedpiper`'s logins. One team is active per deployment; the previous team's files stay in `teams/`.
 
 **Using your own Gitea.** The same scripts drive an instance you already run (on the LAN behind a private CA, or on the internet with a public certificate). Switch with `.env` only, after `make down`:
 
@@ -403,7 +416,8 @@ GITEA_ADMIN_TOKEN=<token with write:admin,write:organization,write:repository,wr
 GITEA_CA_FILE=/usr/local/share/ca-certificates/<your-ca>.crt # private CA only; blank for a public certificate
 TEAM_CI_LABEL=ci                                             # the runs-on label your runner registered
 TEAM_HUMAN_USER=<your login>                                 # existing account: becomes org owner and may merge
-TEAM_DINESH_GITEA_TOKEN= TEAM_GILFOYLE_GITEA_TOKEN= TEAM_JARED_GITEA_TOKEN=   # blank: tokens are per instance, the bootstrap mints new ones
+TEAM_DINESH_GITEA_TOKEN= TEAM_GILFOYLE_GITEA_TOKEN= TEAM_JARED_GITEA_TOKEN= TEAM_MONICA_GITEA_TOKEN=   # blank: tokens are per instance, the bootstrap mints new ones
+AGENT_LOGIN_SUFFIX=-ai                                       # when your instance already has people named dinesh, gilfoyle, jared or monica
 ```
 
 Then `make up && make team-bootstrap` (twice is fine; it prints what it created). Re-running `make team-bootstrap` is the backstop: it protects every repo in the org and strips any agent that is still a repo admin. Prerequisites: this host trusts your instance's certificate (for a private CA, install its root in the OS store; `GITEA_CA_FILE` is what the agent containers get), and your runner's job image has `git`, `python3` and `venv` (the generated workflow installs into a venv because Debian images refuse system pip installs). What lands on your instance: three machine users (`dinesh`, `gilfoyle`, `jared`), a private org `TEAM_GITEA_ORG` with an `agents` team (write, may create repos), the fixture `demo-calc` with its workflow, and branch protection on `main` (required check, one approval, merge restricted to the admin and you). The admin token stays on this host in `.env`; delete it on your Gitea when you no longer need to re-run the bootstrap. To revoke the agents, delete their three tokens there. Inside a CI job your Gitea is reached through your runner's internal URL, which the workflow gets from the runner, so nothing in the template names your host. Keep a copy of each mode's env (`.env.bundled`, `.env.forge`; gitignored) to switch back and forth.
@@ -415,9 +429,9 @@ One thing to record in your instance's own decision log: on a pull_request event
 **Limits, honestly.**
 
 - The reply guard (`BUZZ_AGENT_REQUIRE_REPLY=1`, at most two rerolls) is advisory: a turn can still end in text nobody sees. Re-mention once before calling it a failure. With `TEAM_NARRATE=both` that text is visible as `›` lines in the thread.
-- The agents' shell tool starts with an empty environment (`HOME` and `PATH` only; the harness scrubs it and has no passthrough flag). Git clone/push still work because credentials are in the file-based store, and the entrypoint writes `~/.gitea.env` for the roles with a token; the personas source it per API call (`. ~/.gitea.env && curl …`). If you edit a persona in `agents/`, you may write `$GITEA_URL`, `$GITEA_OWNER` and `$GITEA_ADMIN` bare (substituted into the prompt at container start), but `$GITEA_TOKEN` only after `. ~/.gitea.env` in the same command. Erlich has no env file.
+- The agents' shell tool starts with an empty environment (`HOME` and `PATH` only; the harness scrubs it and has no passthrough flag). Git clone/push still work because credentials are in the file-based store, and the entrypoint writes `~/.gitea.env` for the roles with a token; the personas source it per API call (`. ~/.gitea.env && curl …`). If you edit a role in `agents/roles/` or a persona in `teams/<team>/personas/`, you may write `$GITEA_URL`, `$GITEA_OWNER` and `$GITEA_ADMIN` bare (substituted into the prompt at container start), but `$GITEA_TOKEN` only after `. ~/.gitea.env` in the same command. Erlich has no env file.
 - Agents can misreport. Gilfoyle once announced a merge that had not happened, and Dinesh once posted an `https://` link to the plain-http Gitea. The team norms now say never claim a merge (Gitea's merge whitelist makes one impossible for an agent anyway) and post links exactly as the API's `html_url` returns them; check the PR page in Gitea rather than trusting the thread.
-- One model for the whole team; there is no per-agent model. A local model does not know its own name (on `qwen3.8-max` Dinesh said it was "Claude"): read `TEAM_MODEL` or the `model=` log line, never ask the agent.
+- One model for the whole team by default (`model` in `team.toml`; a member may override it in its block). A local model does not know its own name (on `qwen3.8-max` Dinesh said it was "Claude"): read `TEAM_MODEL` or the `model=` log line, never ask the agent.
 - Shell quoting trips the models: backticks or `--` inside a command string got mangled (then self-corrected, costing turns). The team norms tell them to write message bodies and JSON to files with a quoted heredoc; keep that rule if you edit `agents/TEAM.md`.
 - Busy channels where several agents talk to each other are unreliable with local 35B-class models (see the `buzz-agent` note in Troubleshooting): keep task channels to one agent plus you, and put jobs in threads.
 - No NIP-OA owner attestation for these server-side agents; no CLI mints it. The allowlist is the access control.
@@ -487,9 +501,16 @@ docker run --rm -v open-llm-stack_gitea-data:/data -v "$PWD":/backup alpine tar 
 | `make gitea-bootstrap` | `./scripts/bootstrap-gitea.sh`: admin user + API token into `.env` (`--rotate` via the script directly) |
 | `make team-bootstrap` | `./scripts/bootstrap-team.sh`: Gitea users + tokens for the agents, org `TEAM_GITEA_ORG` with team `agents`, runner token, fixture repo `<org>/demo-calc` with CI and branch protection (idempotent; migrates an older bootstrap: re-mints under-scoped tokens, transfers `demo-calc` into the org) |
 | `make team-smoke` | `./scripts/team-smoke.sh`: job thread → Dinesh PR → green `ci / test (pull_request)` → Gilfoyle review |
-| `make team-model M=<model_name>` | check the name against LiteLLM, set `TEAM_MODEL` in `.env`, recreate the four agents (they re-read their context caps from the registry) |
+| `make team-model M=<model_name>` | check the name against LiteLLM, set `model` in `teams/<team>/team.toml`, re-render, recreate every member (they re-read their context caps from the registry) |
+| `make team-render [T=<team>]` | `scripts/team-render.py`: `teams/<team>/team.toml` → `teams/<team>/compose.yml` and the `.env` lines every member needs; mints missing member keypairs (plan 16; `make init` runs it) |
+| `make litellm-keys` | `scripts/litellm-keys.sh`: one LiteLLM team per agent team, one virtual key per member, Open WebUI and the Buzz agent, into `.env` (plan 16; `make team-bootstrap` runs it) |
+| `make team-status` | members, roles, logins and container state from the roster |
+| `make member-add N=<name> R=<role> [TITLE="…"]` | append the member to `team.toml`, stub its persona, render, bootstrap its forge user, token, team membership and LiteLLM key, start it |
+| `make member-rm N=<name> [PURGE=1]` | stop the service, remove the member from `team.toml` and the forge teams, re-render; `PURGE=1` also deletes the forge user and the volume |
+| `make member-runtime N=<name> R=goose\|buzz-agent` | switch one member's runtime in `team.toml`, re-render, force-recreate it (plan 12 knob, per member) |
+| `make team-new T=<name> FROM=dev-squad\|solo-builder\|review-board\|content-studio` | start a team from a preset: copy it to `teams/<name>/`, set `TEAM_NAME`, render |
 | `make goose-image` | build `open-llm-stack/goose-agent:1.50.0`, the goose runtime image (plan 12; the one build here) |
-| `make dinesh-runtime R=goose\|buzz-agent` | switch Dinesh's runtime: rewrites `TEAM_DINESH_RUNTIME` + `TEAM_DINESH_IMAGE`, force-recreates `dinesh` |
+| `make dinesh-runtime R=goose\|buzz-agent` | plan 12 alias for `make member-runtime N=dinesh R=…` |
 | `make score-sync` | outcome labels for scored PRs from their final state in Gitea (plan 13) |
 | `make score-report` | complexity counts and the confidence × outcome reliability table |
 | `make context-probe [M=<model>] [FULL=1]` | prove every chat model's declared window through the gateway, any backend (plan 14) |
@@ -499,7 +520,7 @@ docker run --rm -v open-llm-stack_gitea-data:/data -v "$PWD":/backup alpine tar 
 | `make power-ingest` | meter lines on stdin into `litellm-db` (a second host over ssh) |
 | `make cost-report [SINCE="24 hours"]` | kWh the local models burned and what it cost, then per model, client, domain |
 
-Scripts you can also call directly: `./scripts/preflight.sh` (backend reachability from inside litellm), `./scripts/check-ports.sh`, `./scripts/buzz-smoke.sh` (mention the bundled agent, expect a reply), `./scripts/team-smoke.sh`.
+Scripts you can also call directly: `./scripts/preflight.sh` (backend reachability from inside litellm), `./scripts/check-ports.sh`, `./scripts/buzz-smoke.sh` (mention the bundled agent, expect a reply), `./scripts/team-smoke.sh`, `scripts/team-roster.py members|role <role>|get <key>` (read `team.toml` from the shell), `scripts/team-render.py --check` (exit 1 when `compose.yml` or `.env` would change).
 
 ## Layout
 
@@ -510,14 +531,18 @@ open-llm-stack/
 ├── docker-compose.yml           # all services, profile-gated, one network
 ├── .env.example                 # every variable, documented; `make init` copies it to .env and fills secrets
 ├── .gitignore                   # .env, proxy/config.yaml, models/, *.gguf, docker-compose.override.yml
-├── Makefile                     # init, up, down, ps, logs, test, reload, gitea-bootstrap, team-bootstrap, team-smoke, team-model
+├── Makefile                     # init, up, down, ps, logs, test, reload, gitea-bootstrap, team-bootstrap, team-smoke, team-model, team-render, member-add/rm, team-new
 ├── docs/spec.md                 # binding architecture spec: image tags, env vars, verified per-layer facts, gates
 ├── plans/                       # implementation plans 01–08, each ending in its execution report with real output
 ├── proxy/
 │   ├── config.yaml.example      # committed LiteLLM model registry sample
 │   └── config.yaml              # gitignored, the live registry (`make init` copies it)
-├── agents/                      # team personas: TEAM.md (shared norms), dinesh/gilfoyle/jared/erlich.md, jared-heartbeat.md
-│   └── ci-python.yaml           # the one Python CI workflow; bootstrap copies it into demo-calc, Dinesh into repos he creates
+├── agents/                      # what every team shares: TEAM.md (norms), roles/ (builder, reviewer, coordinator, assistant), bin/, template/
+│   └── ci-python.yaml           # the one Python CI workflow; bootstrap copies it into demo-calc, the factory into new repos
+├── teams/                       # teams as data (plan 16)
+│   ├── _base.yml                # the shared service shape every member extends
+│   ├── _presets/                # dev-squad, solo-builder, review-board, content-studio: `make team-new T=<name> FROM=<preset>`
+│   └── piedpiper/               # the default team: team.toml, personas/<name>.md, compose.yml (generated by make team-render, committed)
 ├── runner/config.yaml           # Gitea Actions runner config (label python, host network)
 ├── scripts/
 │   ├── init.sh                  # .env + secrets + proxy/config.yaml, idempotent
@@ -527,8 +552,11 @@ open-llm-stack/
 │   ├── bootstrap-gitea.sh       # admin user + API token, idempotent
 │   ├── buzz-smoke.sh            # CLI round trip: mention the agent, expect a reply
 │   ├── bootstrap-team.sh        # agents' Gitea users + tokens, org TEAM_GITEA_ORG + team, runner token, fixture repo demo-calc, idempotent
-│   ├── team-entrypoint.sh       # shared team-agent entrypoint: guards, git credentials, prompt assembly, context caps from LiteLLM
-│   └── team-smoke.sh            # job thread → Dinesh PR → green CI → Gilfoyle review
+│   ├── team-entrypoint.sh       # shared team-agent entrypoint: guards, git credentials, prompt = TEAM.md + role + persona + roster, context caps from LiteLLM
+│   ├── team-smoke.sh            # job thread → builder PR → green CI → reviewer review (members found by role)
+│   ├── team-render.py           # team.toml → compose.yml + .env lines (plan 16)
+│   ├── team-roster.py           # team.toml for shell scripts: members, role, get, add/rm/set
+│   └── litellm-keys.sh          # one LiteLLM virtual key per member and client, into .env
 └── models/                      # you create it; gitignored; GGUF files for the llamacpp profile
 ```
 

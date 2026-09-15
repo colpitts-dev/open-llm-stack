@@ -61,7 +61,7 @@ select model, count(*) as calls, sum(prompt_tokens) as prompt_tok, sum(completio
        round((sum(joules) / 3600.0 * 1000 / greatest(1, sum(prompt_tokens) + sum(completion_tokens)))::numeric, 3) as wh_per_1k_tok
 from attributed group by model order by calls_kwh desc;
 \echo
-\echo -- per client (LiteLLM key alias; one row, master key, until clients have their own keys: plan 16)
+\echo -- per client (LiteLLM key alias: one row per member, buzz-agent, open-webui once make litellm-keys ran; else master key)
 select client, count(*) as calls, round((sum(joules) * :kwh)::numeric, 3) as calls_kwh, round(:host_cost::numeric, 4) as cost
 from attributed group by client order by calls_kwh desc;
 \echo
