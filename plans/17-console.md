@@ -68,6 +68,7 @@ Data flows: screens call the same scripts the terminal does (`make stack-status`
 | `scripts/init.sh` | mint the console keypair |
 | `docker-compose.yml` / plan 16 renderer | console pubkey in the agents' allowlist (`humans`) |
 | `scripts/smoke-test.sh` | `test_console` |
+| `console/post-job.sh`, `console/approve-job.sh` | new: post a job as the console identity (private channel, humans as members); reply `approved` to the builder's plan (plan 16.5 checkpoint) |
 | `.gitignore` | `console/audit.log` |
 | `README.md` "Console", `docs/spec.md` §3, §5.19, §7, `AGENTS.md` | docs |
 
