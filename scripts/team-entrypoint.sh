@@ -48,19 +48,24 @@ fi
 
 # Prompt = team norms + role duties + persona flavour + roster (base prompt is prepended by the harness itself). Plan 16.
 # TEAM_ROSTER: name=role=Display=title=pubkey;… rendered by team-render.py from team.toml; the first member of each role fills the placeholders.
-roster=""; roster_line=""; REVIEWER_NAME=""; REVIEWER_PUBKEY=""; COORDINATOR_NAME=""; COORDINATOR_PUBKEY=""; BUILDER_NAME=""
+roster=""; roster_line=""; REVIEWER_NAME=""; REVIEWER_PUBKEY=""; REVIEWER_LOGIN=""; COORDINATOR_NAME=""; COORDINATOR_PUBKEY=""; BUILDER_NAME=""; BUILDER_PUBKEY=""
+ADVERSARY_NAME=""; ADVERSARY_PUBKEY=""; ADVERSARY_LOGIN=""; GATEKEEPER_NAME=""; GATEKEEPER_PUBKEY=""
 while IFS='=' read -r n r d t p; do
   [ -n "$n" ] || continue
   roster+="- $d ($t)"$'\n'; roster_line+="${roster_line:+, }$d ($t)"
-  case "$r" in
-    reviewer)    [ -n "$REVIEWER_NAME" ]    || { REVIEWER_NAME=$d;    REVIEWER_PUBKEY=$p; } ;;
+  case "$r" in   # the first member of each role fills the placeholders; logins = name + AGENT_LOGIN_SUFFIX (plan 16.5: the gate script needs them)
+    reviewer)    [ -n "$REVIEWER_NAME" ]    || { REVIEWER_NAME=$d;    REVIEWER_PUBKEY=$p;   REVIEWER_LOGIN="$n${AGENT_LOGIN_SUFFIX:-}"; } ;;
     coordinator) [ -n "$COORDINATOR_NAME" ] || { COORDINATOR_NAME=$d; COORDINATOR_PUBKEY=$p; } ;;
-    builder)     [ -n "$BUILDER_NAME" ]     || BUILDER_NAME=$d ;;
+    builder)     [ -n "$BUILDER_NAME" ]     || { BUILDER_NAME=$d;     BUILDER_PUBKEY=$p; } ;;
+    adversary)   [ -n "$ADVERSARY_NAME" ]   || { ADVERSARY_NAME=$d;   ADVERSARY_PUBKEY=$p;  ADVERSARY_LOGIN="$n${AGENT_LOGIN_SUFFIX:-}"; } ;;
+    gatekeeper)  [ -n "$GATEKEEPER_NAME" ]  || { GATEKEEPER_NAME=$d;  GATEKEEPER_PUBKEY=$p; } ;;
   esac
 done <<<"${TEAM_ROSTER//;/$'\n'}"
+# the gate scripts run in the scrubbed shell and read only ~/.gitea.env (plan 08): teammates' logins, the ledger and the coordinator's pubkey go there too
+[ -f "$HOME/.gitea.env" ] && printf 'export REVIEWER_LOGIN=%s ADVERSARY_LOGIN=%s GATE_REPO=%s COORDINATOR_PUBKEY=%s\n' "$REVIEWER_LOGIN" "$ADVERSARY_LOGIN" "${GITEA_USER:-$TEAM_MEMBER}/gate" "$COORDINATOR_PUBKEY" >> "$HOME/.gitea.env"
 { cat /opt/team/agents/TEAM.md; echo; cat "/opt/team/agents/roles/${TEAM_ROLE}.md"; echo
   cat "/opt/team/teams/${TEAM_NAME}/personas/${TEAM_PERSONA:-$TEAM_MEMBER.md}"; } > "$HOME/.prompt.md"
-sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$TEAM_ROSTER_LINE|$roster_line|g; s|\$REVIEWER_NAME|$REVIEWER_NAME|g; s|\$REVIEWER_PUBKEY|$REVIEWER_PUBKEY|g; s|\$COORDINATOR_NAME|$COORDINATOR_NAME|g; s|\$COORDINATOR_PUBKEY|$COORDINATOR_PUBKEY|g; s|\$BUILDER_NAME|$BUILDER_NAME|g" "$HOME/.prompt.md"   # non-secret values inlined: the shell tool cannot read env
+sed -i "s|\$GITEA_URL|$GITEA_URL|g; s|\$GITEA_OWNER|$GITEA_OWNER|g; s|\$GITEA_ADMIN|${GITEA_ADMIN:-stackadmin}|g; s|\$GITEA_HUMAN|${GITEA_HUMAN:-richard}|g; s|\$TEAM_CI_LABEL|${TEAM_CI_LABEL:-python}|g; s|\$TEAM_ROSTER_LINE|$roster_line|g; s|\$REVIEWER_NAME|$REVIEWER_NAME|g; s|\$REVIEWER_PUBKEY|$REVIEWER_PUBKEY|g; s|\$COORDINATOR_NAME|$COORDINATOR_NAME|g; s|\$COORDINATOR_PUBKEY|$COORDINATOR_PUBKEY|g; s|\$BUILDER_NAME|$BUILDER_NAME|g; s|\$BUILDER_PUBKEY|$BUILDER_PUBKEY|g; s|\$ADVERSARY_NAME|$ADVERSARY_NAME|g; s|\$ADVERSARY_PUBKEY|$ADVERSARY_PUBKEY|g; s|\$GATEKEEPER_NAME|$GATEKEEPER_NAME|g; s|\$GATEKEEPER_PUBKEY|$GATEKEEPER_PUBKEY|g; s|\$ATTACK_CHANNEL|${TEAM_ATTACK_CHANNEL:-}|g; s|\$GATE_CHANNEL|${TEAM_GATE_CHANNEL:-}|g" "$HOME/.prompt.md"   # non-secret values inlined: the shell tool cannot read env
 
 # Context window from LiteLLM's registry, so TEAM_MODEL is the only switch (no jq in this image: sed/grep on the JSON).
 # Verified 2026-09-13 against ornith-max (237568/16384) and qwen3.8-max (106496/16384).

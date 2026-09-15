@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Record the gate (plan 16.5): the verdict comes from gate-signals (never from the caller), the score from score-post, the
+# ledger entry goes to the gatekeeper's private `gate` repository, and the two lines go to the thread.
+# Usage: gate-post <repo> <pr> <rubric.json> [<channel-uuid> <thread-root-id> [<return address>]]. Bash only (no jq).
+set -euo pipefail
+repo="${1:?repo}"; n="${2:?pr}"; rf="${3:?rubric.json}"; ch="${4:-}"; root="${5:-}"; ret="${6:-}"
+. "$HOME/.gitea.env"; B="$GITEA_URL/api/v1"; H=(-H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json")
+sig=$(/opt/team/agents/bin/gate-signals "$repo" "$n" | sed '/^--- diff/,$d') || { echo "gate-signals: not ready or failed; nothing recorded" >&2; exit 3; }
+verdict=$(sed -n 's/^VERDICT=//p' <<<"$sig"); reasons=$(sed -n 's/^REASONS=//p' <<<"$sig"); sha=$(sed -n 's/^HEAD=//p' <<<"$sig")
+[ "$verdict" = ship ] || [ "$verdict" = no-ship ] || { echo "no verdict in the signals" >&2; exit 2; }
+/opt/team/agents/bin/score-post "$repo" "$n" "$rf" "$ch" "$root"     # labels + Gitea comment + **Score:** line (plan 13)
+ledger="${GATE_REPO:-$GITEA_USER/gate}"; lab=ship/no; [ "$verdict" = ship ] && lab=ship/yes
+esc() { sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}'; }
+body=$(printf '**Verdict:** %s — %s\n\n```\n%s\n```\n' "$verdict" "${reasons:-all checks pass}" "$sig" | esc)
+created=$(curl -fsS "${H[@]}" -d "{\"title\":\"$repo#$n $verdict (${sha:0:7})\",\"body\":\"$body\"}" "$B/repos/$ledger/issues") || { echo "cannot write the ledger $ledger (make team-bootstrap creates it)" >&2; exit 4; }
+li=""; [[ $created =~ \"number\":([0-9]+) ]] && li="${BASH_REMATCH[1]}"
+[ -z "$li" ] || curl -sS -o /dev/null "${H[@]}" -d "{\"labels\":[\"$lab\"]}" "$B/repos/$ledger/issues/$li/labels" || true
+echo "ledger: $ledger#$li $repo#$n $verdict ($lab)"
+if [ -n "$ch" ] && [ -n "$root" ]; then
+  printf '**Verdict:** %s — %s#%s (%s): %s%s\n' "$verdict" "$repo" "$n" "${sha:0:7}" "${reasons:-all checks pass}" "${ret:+ · return $ret}" \
+    | buzz messages send --channel "$ch" --reply-to "$root" ${COORDINATOR_PUBKEY:+--mention "$COORDINATOR_PUBKEY"} --content - >/dev/null && echo "posted in thread"
+fi

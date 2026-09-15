@@ -13,9 +13,11 @@ ROLES = {   # role -> (Gitea team, session policy, forge account); the closed li
     "builder":     ("builders",     "thread",  True),
     "reviewer":    ("reviewers",    "thread",  True),
     "coordinator": ("coordinators", "channel", True),
+    "adversary":   ("adversaries",  "thread",  True),    # plan 16.5: code read + pulls write, no issues unit (blind)
+    "gatekeeper":  ("gatekeepers",  "channel", True),    # plan 16.5: code read, issues read, pulls write; owns <login>/gate
     "assistant":   (None,           "channel", False),
 }
-ROLE_WORD = {"builder": "builder", "reviewer": "reviewer", "coordinator": "coordinator and judge: scores every PR after CI and the review", "assistant": "assistant"}
+ROLE_WORD = {"builder": "builder", "reviewer": "reviewer", "coordinator": "coordinator: routes every job", "adversary": "adversary: attacks every PR blind", "gatekeeper": "gatekeeper and judge: ship verdict and score", "assistant": "assistant"}
 IMAGES = {"buzz-agent": "ghcr.io/block/buzz-sprig:sha-e17cdd9", "goose": "open-llm-stack/goose-agent:1.50.0"}   # spec §1
 BUZZ_IMAGE = "ghcr.io/block/buzz:sha-e17cdd9"   # its buzz-admin mints keypairs (same as scripts/init.sh)
 

@@ -29,7 +29,7 @@ gitea-bootstrap: ## admin user + API token for the bundled Gitea (plan 04)
 team-bootstrap:  ## Gitea users/tokens for the agents, runner token, fixture repo (plan 08)
 	./scripts/bootstrap-team.sh
 
-team-smoke:      ## submit a job thread; expect a green PR and a review
+team-smoke:      ## job -> **Plan:** -> approved -> PR + green CI -> review + conformance -> attack in #attack -> verdict + score in #gate (plan 16.5)
 	./scripts/team-smoke.sh
 
 goose-image:     ## build open-llm-stack/goose-agent (plan 12; downloads the pinned goose release, apt-get)

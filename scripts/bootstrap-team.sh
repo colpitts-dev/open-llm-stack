@@ -70,11 +70,17 @@ ensure_team() {   # ensure_team <name> <can_create_org_repo> <units_map json> <m
     tid=$(api -d "{\"name\":\"$name\",\"permission\":\"read\",\"can_create_org_repo\":$create,\"includes_all_repositories\":true,\"units_map\":$units}" "$B/orgs/$ORG/teams" | jq -r .id) && echo "created team $ORG/$name"
   else api -o /dev/null -X PATCH -d "{\"name\":\"$name\",\"units_map\":$units}" "$B/teams/$tid" && echo "team $ORG/$name exists (units reconciled)"; fi   # units change over time (plan 13: coordinators need pulls write to label a PR)
   for who in "$@"; do api -o /dev/null -X PUT "$B/teams/$tid/members/$who" && echo "team $name: member $who"; done
+  local cur stale; cur=$(api "$B/teams/$tid/members" | jq -r '.[].login')   # plan 16.5: a role reassignment must not leave a member's old team access behind
+  for stale in $cur; do printf '%s\n' "$@" | grep -qx "$stale" || { api -o /dev/null -X DELETE "$B/teams/$tid/members/$stale" && echo "team $name: removed stale member $stale"; }; done
 }
 logins() { awk -v r="$1" '$2==r {print $4}' <<<"$ROSTER" | paste -sd ' '; }
 ensure_team builders     true  '{"repo.code":"write","repo.pulls":"write","repo.issues":"write","repo.actions":"read","repo.releases":"read"}' $(logins builder)
 ensure_team reviewers    false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' $(logins reviewer)
 ensure_team coordinators false '{"repo.code":"read","repo.pulls":"write","repo.issues":"write","repo.actions":"read"}' $(logins coordinator)   # pulls write: plan 13
+# plan 16.5: the adversary has no issues unit at all (404 on every issue: it attacks blind); the gatekeeper reads issues (the spec
+# checklist, the conformance comment) but cannot edit or label them (403), and labels PRs through pulls write (the score).
+ensure_team adversaries  false '{"repo.code":"read","repo.pulls":"write","repo.actions":"read"}' $(logins adversary)
+ensure_team gatekeepers  false '{"repo.code":"read","repo.issues":"read","repo.pulls":"write","repo.actions":"read"}' $(logins gatekeeper)
 old=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="agents") | .id'); [ -n "$old" ] && api -o /dev/null -X DELETE "$B/teams/$old" && echo "removed legacy team $ORG/agents (write+create for everyone)"
 oid=$(api "$B/orgs/$ORG/teams" | jq -r '.[] | select(.name=="Owners") | .id')
 api -o /dev/null -X PUT "$B/teams/$oid/members/$HUMAN" && echo "org owner $HUMAN"
@@ -84,7 +90,7 @@ ensure_label() {   # ensure_label <name> <color> <description>
   api "$B/orgs/$ORG/labels?limit=100" | jq -e --arg n "$1" '.[] | select(.name==$n)' >/dev/null && return 0
   api -o /dev/null -d "{\"name\":\"$1\",\"color\":\"$2\",\"description\":\"$3\",\"exclusive\":true}" "$B/orgs/$ORG/labels" && echo "label $1"
 }
-JUDGE=$(awk '$2=="coordinator" {print $3; exit}' <<<"$ROSTER")   # the coordinator scores (plan 13); label text names the current one
+JUDGE=$(awk '$2=="gatekeeper" {print $3; exit}' <<<"$ROSTER"); [ -n "$JUDGE" ] || JUDGE=$(awk '$2=="coordinator" {print $3; exit}' <<<"$ROSTER")   # the gatekeeper scores (plan 16.5), else the coordinator (plan 13)
 for i in 1 2 3 4 5; do ensure_label "complexity/$i" "#5b8def" "task + change complexity, 1 trivial .. 5 hard ($JUDGE)"; done
 ensure_label confidence/low    "#d0312d" "unlikely to merge as-is ($JUDGE)"
 ensure_label confidence/medium "#e0a800" "may need a change before merge ($JUDGE)"
@@ -92,6 +98,46 @@ ensure_label confidence/high   "#2e9e4f" "expected to merge as-is ($JUDGE)"
 ensure_label outcome/merged-as-is         "#2e9e4f" "merged at the scored sha (make score-sync)"
 ensure_label outcome/merged-after-changes "#e0a800" "merged after more commits (make score-sync)"
 ensure_label outcome/closed               "#888888" "closed unmerged (make score-sync)"
+# Defect labels (plan 16.5): the adversary's highest open severity on a PR, one value per PR (exclusive scope).
+ensure_label defect/critical "#7a0000" "adversary: data loss, security, or silent wrong result on normal input"
+ensure_label defect/high     "#d0312d" "adversary: crash or wrong result on an input a user will hit"
+ensure_label defect/medium   "#e0a800" "adversary: wrong on an edge input, missing validation"
+ensure_label defect/low      "#5b8def" "adversary: hygiene, naming, dead code"
+ensure_label defect/none     "#2e9e4f" "adversary: attacked, nothing found"
+# Gate ledger (plan 16.5): one private repository per gatekeeper under its own account, created by the admin (users cannot
+# create repositories on every instance). Coordinators and the human read it; builders, reviewers and adversaries get 404.
+while read -r gk pfx; do
+  [ -n "$gk" ] || continue
+  if [ "$(code -H "$A" "$B/repos/$gk/gate")" != 200 ]; then
+    api -o /dev/null -d '{"name":"gate","private":true,"auto_init":true,"default_branch":"main","description":"ship/no-ship ledger (plan 16.5)"}' "$B/admin/users/$gk/repos" && echo "created $gk/gate"
+  else echo "$gk/gate exists"; fi
+  for c in $(logins coordinator) "$HUMAN"; do api -o /dev/null -X PUT -d '{"permission":"read"}' "$B/repos/$gk/gate/collaborators/$c"; done; echo "$gk/gate readers: $(logins coordinator) $HUMAN"
+  gtok=$(grep -E "^${pfx}_GITEA_TOKEN=" .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//')   # repo labels need write:issue: the gatekeeper's own token (the admin token has no issue scope)
+  for l in "ship/yes #2e9e4f" "ship/no #d0312d"; do set -- $l
+    curl -fsS -H "Authorization: token $gtok" "$B/repos/$gk/gate/labels?limit=50" | jq -e --arg n "$1" '.[] | select(.name==$n)' >/dev/null \
+      || curl -fsS -o /dev/null -X POST -H "Authorization: token $gtok" -H 'Content-Type: application/json' -d "{\"name\":\"$1\",\"color\":\"$2\"}" "$B/repos/$gk/gate/labels"
+  done; echo "$gk/gate labels: ship/yes ship/no"
+done <<<"$(awk '$2=="gatekeeper" {print $4, $5}' <<<"$ROSTER")"
+# Private channels for the barriers (plan 16.5): #attack = coordinator + adversary + humans, #gate = coordinator + gatekeeper + humans.
+# Created once by the smoke identity (permanent, private: a non-member can neither read nor post), remembered in .env, members reconciled on every run.
+if [ -n "${TEAM_SMOKE_PRIVATE_KEY:-}" ] && curl -sS -o /dev/null -m 5 "http://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}/"; then
+  SPRIG=ghcr.io/block/buzz-sprig:sha-e17cdd9; URL=${BUZZ_RELAY_URL:-ws://${BUZZ_PUBLIC_HOST:-127.0.0.1:3002}}
+  bz() { docker run --rm --network host -e BUZZ_PRIVATE_KEY="$TEAM_SMOKE_PRIVATE_KEY" -e BUZZ_RELAY_URL="$URL" --entrypoint buzz "$SPRIG" "$@"; }
+  pubkey_of() { grep -E "^$1_PUBKEY=" .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//'; }
+  ensure_channel() {   # ensure_channel <ENV_VAR> <name> <ENV_PREFIX>...: reuse the id in .env while the relay still knows it, else create; then add members
+    local var="$1" name="$2"; shift 2; local id; id=$(grep -E "^$var=" .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//' || true)
+    if [ -z "$id" ] || [ "$(bz channels get --channel "$id" 2>/dev/null | jq -r '.channel_id // empty')" != "$id" ]; then
+      id=$(bz channels create --name "$name" --type stream --visibility private --description "plan 16.5: $name (members only)" | jq -r .channel_id)
+      if grep -qE "^$var=" .env; then setenv "$var" "$id"; else echo "$var=$id" >> .env; fi; echo "created channel $name ($id) -> $var"
+    else echo "channel $name ($id) exists"; fi
+    local p k; for p in "$@"; do k=$(pubkey_of "$p"); [ -n "$k" ] && bz channels add-member --channel "$id" --pubkey "$k" --role bot >/dev/null; done
+    local h; for h in $(tr ',' ' ' <<<"${TEAM_ALLOWLIST:-}"); do bz channels add-member --channel "$id" --pubkey "$h" --role member >/dev/null; done
+    echo "channel $name: $(bz channels members --channel "$id" | jq 'length') members"
+  }
+  ensure_channel TEAM_ATTACK_CHANNEL attack $(awk '$2=="coordinator" || $2=="adversary"  {print $5}' <<<"$ROSTER")
+  ensure_channel TEAM_GATE_CHANNEL   gate   $(awk '$2=="coordinator" || $2=="gatekeeper" {print $5}' <<<"$ROSTER")
+  echo "channels are read by the agents at start: docker compose up -d --force-recreate $(awk '{print $1}' <<<"$ROSTER" | paste -sd ' ')"
+else echo "WARNING: relay not reachable or TEAM_SMOKE_PRIVATE_KEY blank: #attack/#gate not created (make up with profile buzz, then rerun)" >&2; fi
 
 # Template repository: python-template (workflow for THIS mode's runner label + starter files + the protection rule).
 # Agents generate new repos from it (agents/bin/new-repo); `protected_branch:true` copies the rule at birth.

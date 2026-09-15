@@ -181,8 +181,8 @@ PY
   esac
 }
 
-test_team_score() {   # G26: script-only scoring path inside the coordinator on the newest demo-calc PR; invalid rubric rejected (plan 13)
-  local coord; coord=$(member coordinator)
+test_team_score() {   # G26: script-only scoring path inside the judge (the gatekeeper since plan 16.5, else the coordinator) on the newest demo-calc PR; invalid rubric rejected (plan 13)
+  local coord; coord=$(member gatekeeper); [ -n "$coord" ] || coord=$(member coordinator)
   local base="${GITEA_PUBLIC_URL%/}/api/v1" auth="Authorization: token ${GITEA_ADMIN_TOKEN}" judge="Authorization: token $(member_var "$coord" GITEA_TOKEN)" org="${TEAM_GITEA_ORG:-piedpiper}"
   echo "--- team: PR scoring (score-post with a canned rubric inside $coord, no LLM)"
   local n; n=$(curl -fsS -H "$auth" "$base/repos/$org/demo-calc/pulls?state=all&limit=1" | jq -r '.[0].number'); [ -n "$n" ] && [ "$n" != null ] || fail "no PR in demo-calc"
@@ -202,9 +202,25 @@ has_profile buzz && test_buzz
 { has_profile gitea || [ -n "${GITEA_ADMIN_TOKEN:-}" ]; } && test_gitea   # external Gitea: no profile, but a token
 has_profile buzz-agent && ./scripts/buzz-smoke.sh
 has_profile gitea-runner && test_gitea_runner
+test_team_gate() {   # G45: the gate's script path inside the gatekeeper on the newest demo-calc PR (no LLM): deterministic signals, verdict, ledger
+  local gk; gk=$(member gatekeeper); [ -n "$gk" ] || { echo "--- team: no gatekeeper in team.toml (gate test skipped)"; return 0; }
+  local B="${GITEA_PUBLIC_URL%/}/api/v1" n; n=$(curl -fsS -H "Authorization: token $GITEA_ADMIN_TOKEN" "$B/repos/${TEAM_GITEA_ORG:-piedpiper}/demo-calc/pulls?state=all&limit=1" | jq -r '.[0].number // empty')
+  echo "--- team: gate (gate-signals + gate-post with a canned rubric inside $gk on demo-calc#$n, no LLM)"
+  local sig rc; sig=$(docker compose exec -T "$gk" /opt/team/agents/bin/gate-signals demo-calc "$n" 2>&1 | sed '/^--- diff/,$d'); rc=$?
+  if grep -q '^VERDICT=' <<<"$sig"; then
+    grep -E '^(CI|REVIEW|APPROVALS|CONFORMANCE|ATTACK|DEFECT|SPEC|CRITERIA|VERDICT|REASONS)=' <<<"$sig" | paste -sd' ' | cut -c1-200
+    docker compose exec -T "$gk" bash -c 'printf "{\"scope\":0,\"novelty\":0,\"risk\":0,\"verification\":0,\"ambiguity\":0,\"tests\":2,\"ci\":2,\"review\":2,\"scope_match\":2,\"hygiene\":2,\"summary\":\"gate smoke: canned rubric\",\"evidence\":{}}" > /tmp/g.json
+/opt/team/agents/bin/gate-post demo-calc '"$n"' /tmp/g.json' | tail -2
+    local gk_login; gk_login=$(python3 scripts/team-roster.py members | awk -v n="$gk" '$1==n {print $4}')
+    local coord_tok; coord_tok=$(member_var "$(member coordinator)" GITEA_TOKEN)
+    curl -fsS -H "Authorization: token $coord_tok" "$B/repos/$gk_login/gate/issues?state=all&limit=5" | jq -e --arg t "demo-calc#$n " '[.[] | select(.title|startswith($t))] | length > 0' >/dev/null && echo "ledger entry present in $gk_login/gate" || { echo "FAIL: no ledger entry for demo-calc#$n" >&2; return 1; }
+  else echo "gate-signals: $(grep -m1 'not ready' <<<"$sig" || echo "exit $rc") (script path exercised; the newest PR predates the pipeline or is mid-flight)"; fi
+}
+
 has_profile team && ./scripts/team-smoke.sh
 has_profile team && test_team_factory
 has_profile team && test_team_narrate
 has_profile team && test_team_runtime
 has_profile team && test_team_score
+has_profile team && test_team_gate
 echo "smoke test finished"
